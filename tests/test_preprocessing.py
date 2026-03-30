@@ -19,7 +19,8 @@ class FakeTagger:
         if sample.brand == "alpha":
             return TaggingResult(
                 caption="black wool coat",
-                category="coat",
+                category="coat|trousers",
+                detail="long wool coat|tailored trousers",
                 color="black",
                 material="wool",
                 mood="minimal",
@@ -29,6 +30,7 @@ class FakeTagger:
         return TaggingResult(
             caption="red silk dress",
             category="gown",
+            detail="evening gown|heels",
             color="scarlet",
             material="silk",
             mood="romantic",
@@ -43,24 +45,26 @@ def create_image(path: Path) -> None:
 
 
 def test_inventory_only_collects_collection_images(tmp_path: Path) -> None:
-    create_image(tmp_path / "spring-ready-to-wear" / "alpha" / "collection" / "0001_a.jpg")
-    create_image(tmp_path / "spring-ready-to-wear" / "alpha" / "lookbook" / "0002_b.jpg")
-    create_image(tmp_path / "spring-ready-to-wear" / "beta" / "collection" / "0001_c.jpg")
+    create_image(tmp_path / "2026" / "spring-ready-to-wear" / "alpha" / "collection" / "0001_a.jpg")
+    create_image(tmp_path / "2026" / "spring-ready-to-wear" / "alpha" / "lookbook" / "0002_b.jpg")
+    create_image(tmp_path / "2026" / "spring-ready-to-wear" / "beta" / "collection" / "0001_c.jpg")
 
-    rows = build_image_inventory(tmp_path / "spring-ready-to-wear")
+    rows = build_image_inventory(tmp_path)
 
     assert len(rows) == 2
     assert {row.brand for row in rows} == {"alpha", "beta"}
+    assert {row.year for row in rows} == {"2026"}
+    assert {row.season_group for row in rows} == {"spring-ready-to-wear"}
     assert all(row.source_type == "collection" for row in rows)
 
 
 def test_sample_manifest_takes_first_and_last_per_brand(tmp_path: Path) -> None:
     for name in ["0001_a.jpg", "0002_b.jpg", "0003_c.jpg"]:
-        create_image(tmp_path / "spring-ready-to-wear" / "alpha" / "collection" / name)
+        create_image(tmp_path / "2026" / "spring-ready-to-wear" / "alpha" / "collection" / name)
     for name in ["0004_d.jpg", "0005_e.jpg"]:
-        create_image(tmp_path / "spring-ready-to-wear" / "beta" / "collection" / name)
+        create_image(tmp_path / "2026" / "spring-ready-to-wear" / "beta" / "collection" / name)
 
-    inventory = build_image_inventory(tmp_path / "spring-ready-to-wear")
+    inventory = build_image_inventory(tmp_path)
     manifest = build_sample_manifest(inventory)
 
     alpha_rows = [row for row in manifest if row.brand == "alpha"]
@@ -71,27 +75,31 @@ def test_sample_manifest_takes_first_and_last_per_brand(tmp_path: Path) -> None:
 
 def test_rough_tagging_and_frequency_tables(tmp_path: Path) -> None:
     for name in ["0001_a.jpg", "0002_b.jpg"]:
-        create_image(tmp_path / "spring-ready-to-wear" / "alpha" / "collection" / name)
+        create_image(tmp_path / "2026" / "spring-ready-to-wear" / "alpha" / "collection" / name)
     for name in ["0001_c.jpg", "0002_d.jpg"]:
-        create_image(tmp_path / "spring-ready-to-wear" / "beta" / "collection" / name)
+        create_image(tmp_path / "2026" / "spring-ready-to-wear" / "beta" / "collection" / name)
 
-    inventory = build_image_inventory(tmp_path / "spring-ready-to-wear")
+    inventory = build_image_inventory(tmp_path)
     manifest = build_sample_manifest(inventory)
     raw_rows = run_rough_tagging(manifest, FakeTagger())
     frequencies = build_frequency_rows(raw_rows)
 
     assert len(raw_rows) == 4
     coat_row = next(row for row in frequencies if row.feature == "category" and row.raw_value == "coat")
+    trousers_row = next(row for row in frequencies if row.feature == "category" and row.raw_value == "trousers")
     gown_row = next(row for row in frequencies if row.feature == "category" and row.raw_value == "gown")
+    detail_row = next(row for row in frequencies if row.feature == "detail" and row.raw_value == "long wool coat")
     assert coat_row.count == 2
+    assert trousers_row.count == 2
     assert gown_row.count == 2
+    assert detail_row.count == 2
 
 
 def test_seed_and_apply_canonical_mappings_preserve_raw_values(tmp_path: Path) -> None:
     for name in ["0001_a.jpg", "0002_b.jpg"]:
-        create_image(tmp_path / "spring-ready-to-wear" / "beta" / "collection" / name)
+        create_image(tmp_path / "2026" / "spring-ready-to-wear" / "beta" / "collection" / name)
 
-    inventory = build_image_inventory(tmp_path / "spring-ready-to-wear")
+    inventory = build_image_inventory(tmp_path)
     manifest = build_sample_manifest(inventory)
     raw_rows = run_rough_tagging(manifest, FakeTagger())
     frequencies = build_frequency_rows(raw_rows)
@@ -121,6 +129,17 @@ def test_seed_and_apply_canonical_mappings_preserve_raw_values(tmp_path: Path) -
                     status="approved",
                 )
             )
+        elif row.feature == "detail" and row.variant == "evening gown":
+            updated.append(
+                CanonicalMappingRow(
+                    feature=row.feature,
+                    canonical="gown",
+                    variant=row.variant,
+                    mapping_type="parent_map",
+                    notes="collapse subtype for v1",
+                    status="approved",
+                )
+            )
         else:
             updated.append(row)
 
@@ -128,6 +147,8 @@ def test_seed_and_apply_canonical_mappings_preserve_raw_values(tmp_path: Path) -
 
     assert normalized[0].raw_category == "gown"
     assert normalized[0].canonical_category == "dress"
+    assert normalized[0].raw_detail == "evening gown|heels"
+    assert normalized[0].canonical_detail == "gown|heels"
     assert normalized[0].raw_color == "scarlet"
     assert normalized[0].canonical_color == "red"
 
@@ -138,9 +159,9 @@ def test_retrieval_eval_logs_raw_and_canonical_modes(tmp_path: Path) -> None:
         "beta": ["0001_c.jpg", "0002_d.jpg"],
     }.items():
         for name in names:
-            create_image(tmp_path / "spring-ready-to-wear" / brand / "collection" / name)
+            create_image(tmp_path / "2026" / "spring-ready-to-wear" / brand / "collection" / name)
 
-    inventory = build_image_inventory(tmp_path / "spring-ready-to-wear")
+    inventory = build_image_inventory(tmp_path)
     manifest = build_sample_manifest(inventory)
     raw_rows = run_rough_tagging(manifest, FakeTagger())
     mappings = [
@@ -158,3 +179,18 @@ def test_retrieval_eval_logs_raw_and_canonical_modes(tmp_path: Path) -> None:
 
     assert {row.mode for row in logs} == {"raw", "canonical"}
     assert any(row.query_id.startswith("cat_") for row in logs)
+
+
+def test_sample_manifest_splits_brands_by_year_and_season(tmp_path: Path) -> None:
+    create_image(tmp_path / "2025" / "spring-ready-to-wear" / "alpha" / "collection" / "0001_a.jpg")
+    create_image(tmp_path / "2025" / "spring-ready-to-wear" / "alpha" / "collection" / "0002_b.jpg")
+    create_image(tmp_path / "2026" / "spring-ready-to-wear" / "alpha" / "collection" / "0003_c.jpg")
+    create_image(tmp_path / "2026" / "spring-ready-to-wear" / "alpha" / "collection" / "0004_d.jpg")
+
+    inventory = build_image_inventory(tmp_path)
+    manifest = build_sample_manifest(inventory)
+
+    alpha_rows = [row for row in manifest if row.brand == "alpha"]
+
+    assert len(alpha_rows) == 4
+    assert [row.year for row in alpha_rows] == ["2025", "2025", "2026", "2026"]

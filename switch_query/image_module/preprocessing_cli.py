@@ -25,17 +25,21 @@ from .preprocessing import (
 def main() -> None:
     parser = argparse.ArgumentParser(description="Synonym and preprocessing v1 helpers")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    dataset_root_help = (
+        "Path to the archive root. Supports roots like data, data/2026, "
+        "or data/2026/spring-ready-to-wear."
+    )
 
     inventory_parser = subparsers.add_parser("inventory")
-    inventory_parser.add_argument("--dataset-root", required=True)
+    inventory_parser.add_argument("--dataset-root", required=True, help=dataset_root_help)
     inventory_parser.add_argument("--output", required=True)
 
     sample_parser = subparsers.add_parser("sample")
-    sample_parser.add_argument("--dataset-root", required=True)
+    sample_parser.add_argument("--dataset-root", required=True, help=dataset_root_help)
     sample_parser.add_argument("--output", required=True)
 
     tag_parser = subparsers.add_parser("tag")
-    tag_parser.add_argument("--dataset-root", required=True)
+    tag_parser.add_argument("--dataset-root", required=True, help=dataset_root_help)
     tag_parser.add_argument("--output", required=True)
     tag_parser.add_argument("--limit", type=int)
     tag_parser.add_argument(
@@ -48,6 +52,7 @@ def main() -> None:
         "--model",
         default="mlx-community/Qwen2-VL-2B-Instruct-4bit",
     )
+    tag_parser.add_argument("--raw-output-log-dir")
 
     frequency_parser = subparsers.add_parser("frequency")
     frequency_parser.add_argument("--raw-tags", required=True)
@@ -137,6 +142,11 @@ def _build_tagger(args) -> BlankTagger | SubprocessJsonTagger:
             "switch_query.image_module.local_vlm_tagger",
             "--model",
             args.model,
+            *(
+                ["--raw-output-log-dir", args.raw_output_log_dir]
+                if args.raw_output_log_dir
+                else []
+            ),
         ]
     )
 

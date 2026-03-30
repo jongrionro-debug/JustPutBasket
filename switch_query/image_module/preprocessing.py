@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import subprocess
+from collections.abc import Iterable
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Protocol
 
-RAW_FEATURES = ("category", "color", "material", "mood")
+RAW_FEATURES = ("category", "detail", "color", "material", "mood")
+MULTI_VALUE_FEATURES = {"category", "detail"}
+MULTI_VALUE_SEPARATOR = "|"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 
 
 @dataclass(slots=True)
@@ -19,6 +24,7 @@ class InventoryRow:
     image_id: str
     file_path: str
     season_group: str
+    year: str
     brand: str
     source_type: str
     filename: str
@@ -33,6 +39,7 @@ class SampleRow(InventoryRow):
 class RawTagRow(SampleRow):
     caption: str
     raw_category: str
+    raw_detail: str
     raw_color: str
     raw_material: str
     raw_mood: str
@@ -61,6 +68,7 @@ class CanonicalMappingRow:
 @dataclass(slots=True)
 class NormalizedTagRow(RawTagRow):
     canonical_category: str
+    canonical_detail: str
     canonical_color: str
     canonical_material: str
     canonical_mood: str
@@ -71,6 +79,7 @@ class RetrievalQuery:
     query_id: str
     query_text: str
     category: str = ""
+    detail: str = ""
     color: str = ""
     material: str = ""
     mood: str = ""
@@ -93,6 +102,7 @@ class RetrievalEvalRow:
 class TaggingResult:
     caption: str
     category: str = ""
+    detail: str = ""
     color: str = ""
     material: str = ""
     mood: str = ""
@@ -121,7 +131,7 @@ class SubprocessJsonTagger:
     Adapter for any local model runner that prints a JSON object to stdout.
 
     The command receives one extra argument: the image path.
-    Expected JSON keys: caption, category, color, material, mood, review_needed, confidence_note
+    Expected JSON keys: caption, category, detail, color, material, mood, review_needed, confidence_note
     """
 
     def __init__(self, base_command: list[str]) -> None:
@@ -145,11 +155,12 @@ class SubprocessJsonTagger:
         payload = json.loads(completed.stdout)
         return TaggingResult(
             caption=str(payload.get("caption", "")).strip(),
-            category=str(payload.get("category", "")).strip(),
+            category=_normalize_multi_value_text(payload.get("category", "")),
+            detail=_normalize_multi_value_text(payload.get("detail", "")),
             color=str(payload.get("color", "")).strip(),
             material=str(payload.get("material", "")).strip(),
             mood=str(payload.get("mood", "")).strip(),
-            review_needed=bool(payload.get("review_needed", False)),
+            review_needed=_coerce_bool(payload.get("review_needed", False)),
             confidence_note=str(payload.get("confidence_note", "")).strip(),
         )
 
@@ -157,39 +168,40 @@ class SubprocessJsonTagger:
 def build_image_inventory(dataset_root: str | Path) -> list[InventoryRow]:
     root = Path(dataset_root)
     rows: list[InventoryRow] = []
-    for brand_dir in sorted([path for path in root.iterdir() if path.is_dir()]):
-        collection_dir = brand_dir / "collection"
-        if not collection_dir.exists():
+    for image_path in sorted(path for path in root.rglob("*") if path.is_file()):
+        if image_path.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
-        files = sorted(
-            [
-                path
-                for path in collection_dir.iterdir()
-                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-            ]
-        )
-        for image_path in files:
-            rows.append(
-                InventoryRow(
-                    image_id=f"{brand_dir.name}:{image_path.stem}",
-                    file_path=str(image_path.resolve()),
-                    season_group=root.name,
-                    brand=brand_dir.name,
-                    source_type="collection",
-                    filename=image_path.name,
-                )
+        metadata = _inventory_metadata_from_image_path(image_path)
+        if metadata is None:
+            continue
+        rows.append(
+            InventoryRow(
+                image_id=_build_image_id(
+                    year=metadata["year"],
+                    season_group=metadata["season_group"],
+                    brand=metadata["brand"],
+                    stem=image_path.stem,
+                ),
+                file_path=str(image_path.resolve()),
+                season_group=metadata["season_group"],
+                year=metadata["year"],
+                brand=metadata["brand"],
+                source_type=metadata["source_type"],
+                filename=image_path.name,
             )
+        )
+    rows.sort(key=lambda row: (row.year, row.season_group, row.brand, row.filename))
     return rows
 
 
 def build_sample_manifest(inventory: list[InventoryRow]) -> list[SampleRow]:
-    grouped: dict[str, list[InventoryRow]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str], list[InventoryRow]] = defaultdict(list)
     for row in inventory:
-        grouped[row.brand].append(row)
+        grouped[(row.year, row.season_group, row.brand)].append(row)
 
     manifest: list[SampleRow] = []
-    for brand in sorted(grouped):
-        files = sorted(grouped[brand], key=lambda row: row.filename)
+    for group_key in sorted(grouped):
+        files = sorted(grouped[group_key], key=lambda row: row.filename)
         first = files[0]
         last = files[-1]
         manifest.append(
@@ -219,6 +231,7 @@ def run_rough_tagging(
                 **asdict(sample),
                 caption=tagged.caption,
                 raw_category=tagged.category,
+                raw_detail=tagged.detail,
                 raw_color=tagged.color,
                 raw_material=tagged.material,
                 raw_mood=tagged.mood,
@@ -234,13 +247,11 @@ def build_frequency_rows(raw_rows: list[RawTagRow]) -> list[FrequencyRow]:
     counter: Counter[tuple[str, str]] = Counter()
     for row in raw_rows:
         for feature in RAW_FEATURES:
-            value = getattr(row, f"raw_{feature}").strip()
-            if not value:
-                continue
-            key = (feature, value)
-            counter[key] += 1
-            if len(examples[key]) < 5:
-                examples[key].append(row.image_id)
+            for value in _iter_feature_values(getattr(row, f"raw_{feature}"), feature):
+                key = (feature, value)
+                counter[key] += 1
+                if len(examples[key]) < 5:
+                    examples[key].append(row.image_id)
 
     frequency_rows = [
         FrequencyRow(
@@ -281,7 +292,8 @@ def apply_canonical_mappings(
         normalized_rows.append(
             NormalizedTagRow(
                 **asdict(row),
-                canonical_category=index.get(("category", row.raw_category), row.raw_category),
+                canonical_category=_map_feature_values("category", row.raw_category, index),
+                canonical_detail=_map_feature_values("detail", row.raw_detail, index),
                 canonical_color=index.get(("color", row.raw_color), row.raw_color),
                 canonical_material=index.get(("material", row.raw_material), row.raw_material),
                 canonical_mood=index.get(("mood", row.raw_mood), row.raw_mood),
@@ -291,7 +303,16 @@ def apply_canonical_mappings(
 
 
 def build_default_queries(rows: list[NormalizedTagRow], max_queries: int = 12) -> list[RetrievalQuery]:
-    category_counts = Counter(row.canonical_category for row in rows if row.canonical_category)
+    category_counts = Counter(
+        value
+        for row in rows
+        for value in _iter_feature_values(row.canonical_category, "category")
+    )
+    detail_counts = Counter(
+        value
+        for row in rows
+        for value in _iter_feature_values(row.canonical_detail, "detail")
+    )
     mood_counts = Counter(row.canonical_mood for row in rows if row.canonical_mood)
     color_counts = Counter(row.canonical_color for row in rows if row.canonical_color)
     material_counts = Counter(row.canonical_material for row in rows if row.canonical_material)
@@ -300,6 +321,10 @@ def build_default_queries(rows: list[NormalizedTagRow], max_queries: int = 12) -
     for idx, value in enumerate([item[0] for item in category_counts.most_common(3)], start=1):
         queries.append(
             RetrievalQuery(query_id=f"cat_{idx}", query_text=f"{value} look", category=value)
+        )
+    for idx, value in enumerate([item[0] for item in detail_counts.most_common(3)], start=1):
+        queries.append(
+            RetrievalQuery(query_id=f"detail_{idx}", query_text=f"{value} look", detail=value)
         )
     for idx, value in enumerate([item[0] for item in mood_counts.most_common(3)], start=1):
         queries.append(
@@ -363,10 +388,98 @@ def _score_query_against_row(
     for feature in RAW_FEATURES:
         query_value = getattr(query, feature)
         row_value = getattr(row, f"{prefix}{feature}", "")
-        if query_value and row_value and query_value == row_value:
+        if query_value and row_value and query_value in _iter_feature_values(row_value, feature):
             matched.append(feature)
             score += 1.0
     return score, matched
+
+
+def _iter_feature_values(value: str, feature: str) -> list[str]:
+    cleaned = value.strip()
+    if not cleaned:
+        return []
+    if feature not in MULTI_VALUE_FEATURES:
+        return [cleaned]
+    return [item.strip() for item in cleaned.split(MULTI_VALUE_SEPARATOR) if item.strip()]
+
+
+def _normalize_multi_value_text(value: object) -> str:
+    if isinstance(value, str):
+        candidates = [
+            item.strip()
+            for item in value.replace("\n", MULTI_VALUE_SEPARATOR).replace(",", MULTI_VALUE_SEPARATOR).split(MULTI_VALUE_SEPARATOR)
+        ]
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, dict)):
+        candidates = [str(item).strip() for item in value]
+    else:
+        candidates = [str(value).strip()]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if not item:
+            continue
+        if item not in seen:
+            seen.add(item)
+            normalized.append(item)
+    return MULTI_VALUE_SEPARATOR.join(normalized)
+
+
+def _map_feature_values(
+    feature: str,
+    raw_value: str,
+    index: dict[tuple[str, str], str],
+) -> str:
+    if feature not in MULTI_VALUE_FEATURES:
+        return index.get((feature, raw_value), raw_value)
+    return MULTI_VALUE_SEPARATOR.join(
+        index.get((feature, value), value)
+        for value in _iter_feature_values(raw_value, feature)
+    )
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no", ""}:
+            return False
+    return bool(value)
+
+
+def _infer_year_from_path(path: Path) -> str:
+    for part in reversed(path.parts):
+        match = YEAR_PATTERN.search(part)
+        if match:
+            return match.group(0)
+    return ""
+
+
+def _inventory_metadata_from_image_path(image_path: Path) -> dict[str, str] | None:
+    source_dir = image_path.parent
+    source_type = source_dir.name
+    if source_type != "collection":
+        return None
+
+    brand_dir = source_dir.parent
+    season_dir = brand_dir.parent
+    if brand_dir == source_dir or season_dir == brand_dir:
+        return None
+
+    return {
+        "year": _infer_year_from_path(image_path),
+        "season_group": season_dir.name,
+        "brand": brand_dir.name,
+        "source_type": source_type,
+    }
+
+
+def _build_image_id(*, year: str, season_group: str, brand: str, stem: str) -> str:
+    parts = [part for part in (year, season_group, brand, stem) if part]
+    return ":".join(parts)
 
 
 def write_csv(path: str | Path, rows: Iterable[object]) -> None:
