@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "switch-query-v2"
+version = "0.1.0"
+description = "Image module v1 prototype for switch-query"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+baseline = ["openai>=1.0"]
+local_vlm = [
+    "mlx-vlm>=0.4.2",
+    "torch>=2.4",
+    "torchvision>=0.19",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["switch_query", "switch_query.image_module"]

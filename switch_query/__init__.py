@@ -1,0 +1,2 @@
+"""Switch Query prototype package."""
+
