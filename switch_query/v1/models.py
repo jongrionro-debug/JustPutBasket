@@ -78,7 +78,14 @@ class MultimodalEncoder(Protocol):
 
 
 class SyntheticImageGenerator(Protocol):
-    def generate(self, query_text: str, count: int) -> list[str]:
+    def generate(
+        self,
+        query_text: str,
+        count: int,
+        *,
+        query_id: str,
+        balance_score: float,
+    ) -> list[str]:
         """Return paths or opaque handles for generated reference images."""
 
 

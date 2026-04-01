@@ -109,7 +109,12 @@ class V1Pipeline:
     def _generate_references(self, pipeline_input: V1PipelineInput) -> list[GeneratedReference]:
         count = synthetic_reference_count(pipeline_input.balance_score)
         bucket = balance_bucket(pipeline_input.balance_score)
-        generated_paths = self.image_generator.generate(pipeline_input.query_text, count)
+        generated_paths = self.image_generator.generate(
+            pipeline_input.query_text,
+            count,
+            query_id=pipeline_input.query_id,
+            balance_score=pipeline_input.balance_score,
+        )
         if len(generated_paths) != count:
             raise RuntimeError("Synthetic image generator output size did not match requested count")
         return self._build_references_from_paths(

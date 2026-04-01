@@ -91,6 +91,34 @@ class FakeQueryEncoder:
         return vectors
 
 
+class FakeLuxiaGenerator:
+    def __init__(self, config) -> None:
+        self.config = config
+        self.generated_metadata = []
+        self.calls = []
+
+    def generate(self, query_text, count, *, query_id, balance_score):
+        self.calls.append(
+            {
+                "query_text": query_text,
+                "count": count,
+                "query_id": query_id,
+                "balance_score": balance_score,
+            }
+        )
+        path = Path(self.config.output_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        generated = []
+        for index in range(count):
+            target = path / f"{query_id}_gen_{index + 1:02d}.png"
+            target.write_bytes(b"fake")
+            generated.append(str(target))
+        self.generated_metadata = [
+            type("Meta", (), {"revised_prompt": "luxia revised prompt"})()
+        ]
+        return generated
+
+
 def test_run_query_writes_ranked_csv(tmp_path: Path, monkeypatch) -> None:
     index_path = tmp_path / "archive_index.json"
     index_path.write_text(
@@ -126,6 +154,7 @@ def test_run_query_writes_ranked_csv(tmp_path: Path, monkeypatch) -> None:
         retrieval_mode="text_only",
         generated_image_paths=[],
         output_path=str(output_path),
+        html_output_path=None,
         model_name="fake/siglip2",
         device="cpu",
         batch_size=4,
@@ -140,6 +169,60 @@ def test_run_query_writes_ranked_csv(tmp_path: Path, monkeypatch) -> None:
     assert "look-1" in rows[1]
 
 
+def test_run_query_writes_html_preview(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "look-1.jpg"
+    image_path.write_bytes(b"fake")
+    second_image_path = tmp_path / "look-2.jpg"
+    second_image_path.write_bytes(b"fake")
+    index_path = tmp_path / "archive_index.json"
+    index_path.write_text(
+        json.dumps(
+            [
+                {
+                    "image_id": "look-1",
+                    "file_path": str(image_path),
+                    "brand": "alpha",
+                    "vector": [1.0, 0.0],
+                    "metadata": {"season_group": "spring-ready-to-wear"},
+                },
+                {
+                    "image_id": "look-2",
+                    "file_path": str(second_image_path),
+                    "brand": "beta",
+                    "vector": [0.0, 1.0],
+                    "metadata": {"season_group": "spring-ready-to-wear"},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    html_output_path = tmp_path / "results.html"
+
+    monkeypatch.setattr(cli, "SigLIP2Encoder", FakeQueryEncoder)
+
+    result = cli.run_query(
+        index_path=str(index_path),
+        query_text="black tailored coat",
+        query_id="query-1",
+        balance_score=0.0,
+        retrieval_mode="text_only",
+        generated_image_paths=[],
+        output_path=None,
+        html_output_path=str(html_output_path),
+        model_name="fake/siglip2",
+        device="cpu",
+        batch_size=4,
+        top_k=2,
+    )
+
+    html = html_output_path.read_text(encoding="utf-8")
+
+    assert result.html_output_path == str(html_output_path.resolve())
+    assert "V1 Retrieval Preview" in html
+    assert "black tailored coat" in html
+    assert image_path.resolve().as_uri() in html
+
+
 def test_run_query_requires_generated_images_for_fusion_mode(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(cli, "SigLIP2Encoder", FakeQueryEncoder)
 
@@ -152,6 +235,7 @@ def test_run_query_requires_generated_images_for_fusion_mode(tmp_path: Path, mon
             retrieval_mode="fusion",
             generated_image_paths=[],
             output_path=None,
+            html_output_path=None,
             model_name="fake/siglip2",
             device="cpu",
             batch_size=4,
@@ -161,3 +245,101 @@ def test_run_query_requires_generated_images_for_fusion_mode(tmp_path: Path, mon
         assert "generated_image_paths are required" in str(exc)
     else:
         raise AssertionError("Expected fusion mode to require generated images")
+
+
+def test_run_query_uses_luxia_generation_when_enabled(tmp_path: Path, monkeypatch) -> None:
+    index_path = tmp_path / "archive_index.json"
+    index_path.write_text(
+        json.dumps(
+            [
+                {
+                    "image_id": "look-1",
+                    "file_path": str(tmp_path / "look-1.jpg"),
+                    "brand": "alpha",
+                    "vector": [1.0, 0.0],
+                    "metadata": {"season_group": "spring-ready-to-wear"},
+                },
+                {
+                    "image_id": "look-2",
+                    "file_path": str(tmp_path / "look-2.jpg"),
+                    "brand": "beta",
+                    "vector": [0.0, 1.0],
+                    "metadata": {"season_group": "spring-ready-to-wear"},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(cli, "SigLIP2Encoder", FakeQueryEncoder)
+    monkeypatch.setattr(cli, "LuxiaImageGenerator", FakeLuxiaGenerator)
+
+    result = cli.run_query(
+        index_path=str(index_path),
+        query_text="black tailored coat",
+        query_id="query-2",
+        balance_score=0.0,
+        retrieval_mode="fusion",
+        generated_image_paths=[],
+        output_path=None,
+        html_output_path=None,
+        use_luxia_generation=True,
+        luxia_api_key_env="LUXIA_API_KEY",
+        luxia_output_dir=str(tmp_path / "generated_refs"),
+        model_name="fake/siglip2",
+        device="cpu",
+        batch_size=4,
+        top_k=2,
+    )
+
+    assert result.generated_image_count == 1
+    assert len(result.generated_image_paths) == 1
+    assert result.revised_prompt == "luxia revised prompt"
+    assert result.generated_image_paths[0].endswith("query-2_gen_01.png")
+
+
+def test_run_query_prefers_explicit_generated_images_over_luxia(tmp_path: Path, monkeypatch) -> None:
+    index_path = tmp_path / "archive_index.json"
+    explicit_generated = tmp_path / "explicit.png"
+    explicit_generated.write_bytes(b"fake")
+    index_path.write_text(
+        json.dumps(
+            [
+                {
+                    "image_id": "look-1",
+                    "file_path": str(tmp_path / "look-1.jpg"),
+                    "brand": "alpha",
+                    "vector": [1.0, 0.0],
+                    "metadata": {"season_group": "spring-ready-to-wear"},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class FailingLuxiaGenerator:
+        def __init__(self, config) -> None:
+            raise AssertionError("Luxia generator should not be constructed")
+
+    monkeypatch.setattr(cli, "SigLIP2Encoder", FakeQueryEncoder)
+    monkeypatch.setattr(cli, "LuxiaImageGenerator", FailingLuxiaGenerator)
+
+    result = cli.run_query(
+        index_path=str(index_path),
+        query_text="black tailored coat",
+        query_id="query-3",
+        balance_score=0.0,
+        retrieval_mode="fusion",
+        generated_image_paths=[str(explicit_generated)],
+        output_path=None,
+        html_output_path=None,
+        use_luxia_generation=True,
+        luxia_api_key_env="LUXIA_API_KEY",
+        luxia_output_dir=str(tmp_path / "generated_refs"),
+        model_name="fake/siglip2",
+        device="cpu",
+        batch_size=4,
+        top_k=1,
+    )
+
+    assert result.generated_image_paths == [str(explicit_generated)]

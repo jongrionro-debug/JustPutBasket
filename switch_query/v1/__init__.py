@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 from .encoder import DEFAULT_SIGLIP2_MODEL, SigLIP2Encoder, SigLIP2EncoderConfig
+from .generator import LUXIA_DALLE3_URL, LuxiaImageGenerator, LuxiaImageGeneratorConfig
 from .index import InMemoryArchiveIndex, JsonArchiveIndexStore
 from .models import (
     GeneratedReference,
@@ -48,7 +49,10 @@ __all__ = [
     "GeneratedReference",
     "InMemoryArchiveIndex",
     "JsonArchiveIndexStore",
+    "LUXIA_DALLE3_URL",
     "LocalIndexStore",
+    "LuxiaImageGenerator",
+    "LuxiaImageGeneratorConfig",
     "MultimodalEncoder",
     "RetrievalMode",
     "SigLIP2Encoder",

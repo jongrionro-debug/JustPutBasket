@@ -31,7 +31,14 @@ class FakeImageGenerator:
     def __init__(self, generated_paths: list[str]) -> None:
         self.generated_paths = generated_paths
 
-    def generate(self, query_text: str, count: int) -> list[str]:
+    def generate(
+        self,
+        query_text: str,
+        count: int,
+        *,
+        query_id: str,
+        balance_score: float,
+    ) -> list[str]:
         return self.generated_paths[:count]
 
 
