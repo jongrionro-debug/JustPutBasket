@@ -15,9 +15,19 @@ local_vlm = [
     "torch>=2.4",
     "torchvision>=0.19",
 ]
+v1 = [
+    "pillow>=10.0",
+    "torch>=2.4",
+    "transformers>=4.57.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.setuptools]
-packages = ["switch_query", "switch_query.image_module"]
+packages = [
+    "switch_query",
+    "switch_query.image_module",
+    "switch_query.tagging",
+    "switch_query.v1",
+]

@@ -1,11 +1,12 @@
 import csv
 from pathlib import Path
 
-from switch_query.image_module.preprocessing import (
+from switch_query.tagging.preprocessing import (
     CanonicalMappingRow,
     TaggingResult,
     apply_canonical_mappings,
     build_frequency_rows,
+    build_full_manifest,
     build_image_inventory,
     build_sample_manifest,
     evaluate_retrieval,
@@ -20,20 +21,30 @@ class FakeTagger:
             return TaggingResult(
                 caption="black wool coat",
                 category="coat|trousers",
-                detail="long wool coat|tailored trousers",
+                silhouette="tailored",
                 color="black",
                 material="wool",
+                pattern="solid",
+                texture="smooth",
                 mood="minimal",
+                season="fall",
+                era="modern",
+                detail="long wool coat|tailored trousers",
                 review_needed=False,
                 confidence_note="high",
             )
         return TaggingResult(
             caption="red silk dress",
             category="gown",
-            detail="evening gown|heels",
+            silhouette="fluid",
             color="scarlet",
             material="silk",
+            pattern="solid",
+            texture="satin",
             mood="romantic",
+            season="spring",
+            era="vintage",
+            detail="evening gown|heels",
             review_needed=True,
             confidence_note="check subtype",
         )
@@ -73,6 +84,18 @@ def test_sample_manifest_takes_first_and_last_per_brand(tmp_path: Path) -> None:
     assert [row.filename for row in beta_rows] == ["0004_d.jpg", "0005_e.jpg"]
 
 
+def test_full_manifest_includes_every_inventory_row(tmp_path: Path) -> None:
+    for name in ["0001_a.jpg", "0002_b.jpg", "0003_c.jpg"]:
+        create_image(tmp_path / "2026" / "spring-ready-to-wear" / "alpha" / "collection" / name)
+
+    inventory = build_image_inventory(tmp_path)
+    manifest = build_full_manifest(inventory)
+
+    assert len(manifest) == 3
+    assert {row.sample_reason for row in manifest} == {"full_inventory"}
+    assert [row.filename for row in manifest] == ["0001_a.jpg", "0002_b.jpg", "0003_c.jpg"]
+
+
 def test_rough_tagging_and_frequency_tables(tmp_path: Path) -> None:
     for name in ["0001_a.jpg", "0002_b.jpg"]:
         create_image(tmp_path / "2026" / "spring-ready-to-wear" / "alpha" / "collection" / name)
@@ -85,14 +108,17 @@ def test_rough_tagging_and_frequency_tables(tmp_path: Path) -> None:
     frequencies = build_frequency_rows(raw_rows)
 
     assert len(raw_rows) == 4
+    assert {row.raw_season for row in raw_rows} == {"spring"}
     coat_row = next(row for row in frequencies if row.feature == "category" and row.raw_value == "coat")
     trousers_row = next(row for row in frequencies if row.feature == "category" and row.raw_value == "trousers")
     gown_row = next(row for row in frequencies if row.feature == "category" and row.raw_value == "gown")
     detail_row = next(row for row in frequencies if row.feature == "detail" and row.raw_value == "long wool coat")
+    season_row = next(row for row in frequencies if row.feature == "season" and row.raw_value == "spring")
     assert coat_row.count == 2
     assert trousers_row.count == 2
     assert gown_row.count == 2
     assert detail_row.count == 2
+    assert season_row.count == 4
 
 
 def test_seed_and_apply_canonical_mappings_preserve_raw_values(tmp_path: Path) -> None:
@@ -147,10 +173,15 @@ def test_seed_and_apply_canonical_mappings_preserve_raw_values(tmp_path: Path) -
 
     assert normalized[0].raw_category == "gown"
     assert normalized[0].canonical_category == "dress"
+    assert normalized[0].raw_silhouette == "fluid"
+    assert normalized[0].canonical_silhouette == "fluid"
     assert normalized[0].raw_detail == "evening gown|heels"
     assert normalized[0].canonical_detail == "gown|heels"
     assert normalized[0].raw_color == "scarlet"
     assert normalized[0].canonical_color == "red"
+    assert normalized[0].canonical_era == "vintage"
+    assert normalized[0].raw_season == "spring"
+    assert normalized[0].canonical_season == "spring"
 
 
 def test_retrieval_eval_logs_raw_and_canonical_modes(tmp_path: Path) -> None:
@@ -178,7 +209,7 @@ def test_retrieval_eval_logs_raw_and_canonical_modes(tmp_path: Path) -> None:
     logs = evaluate_retrieval(raw_rows, normalized)
 
     assert {row.mode for row in logs} == {"raw", "canonical"}
-    assert any(row.query_id.startswith("cat_") for row in logs)
+    assert any(row.query_id.startswith("category_") for row in logs)
 
 
 def test_sample_manifest_splits_brands_by_year_and_season(tmp_path: Path) -> None:

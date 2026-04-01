@@ -1,21 +1,11 @@
-"""Canonical attributes and stage-aware weighting."""
+"""Compatibility helpers for the legacy image_module namespace."""
 
 from __future__ import annotations
 
 from typing import Mapping
 
-DEFAULT_ATTRIBUTE_NAMES = (
-    "category",
-    "silhouette",
-    "color",
-    "material",
-    "pattern",
-    "texture",
-    "mood",
-    "season",
-    "era",
-    "detail",
-)
+from switch_query.tagging.attributes import DEFAULT_ATTRIBUTE_NAMES
+from switch_query.v1.policies import balance_bucket, synthetic_reference_count
 
 DEFAULT_STAGE_ATTRIBUTE_WEIGHTS: dict[str, dict[str, float]] = {
     "mood_board": {
@@ -31,24 +21,6 @@ DEFAULT_STAGE_ATTRIBUTE_WEIGHTS: dict[str, dict[str, float]] = {
         "texture": 1.10,
     },
 }
-
-
-def balance_bucket(balance_score: float) -> str:
-    """Bucket the balance signal for generated output metadata."""
-    if balance_score <= -0.35:
-        return "divergent"
-    if balance_score >= 0.35:
-        return "convergent"
-    return "neutral"
-
-
-def synthetic_reference_count(balance_score: float) -> int:
-    """Return the number of synthetic references for a balance score."""
-    if balance_score <= -0.70:
-        return 4
-    if balance_score <= -0.15:
-        return 3
-    return 1
 
 
 def stage_attribute_weight(stage: str, attribute_name: str) -> float:

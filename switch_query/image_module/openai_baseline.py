@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Protocol
 from urllib import error, request
 
+from switch_query.tagging.attributes import DEFAULT_ATTRIBUTE_NAMES
+from switch_query.tagging.synonyms import SynonymCatalog
+
 from .attributes import (
-    DEFAULT_ATTRIBUTE_NAMES,
     balance_bucket,
     stage_attribute_weight,
     stage_similarity_weight,
@@ -27,7 +29,6 @@ from .models import (
     ImageRef,
     RankedImage,
 )
-from .synonyms import SynonymCatalog
 
 
 @dataclass(slots=True)

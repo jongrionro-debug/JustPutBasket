@@ -6,3 +6,5 @@ __pycache__/
 
 data/
 switch_query_v2.egg-info/
+
+tmp/

@@ -3,8 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 
-from switch_query.image_module.local_vlm_tagger import _coerce_json
-from switch_query.image_module.preprocessing import SubprocessJsonTagger, SampleRow
+from switch_query.tagging.local_vlm_tagger import _coerce_json
+from switch_query.tagging.preprocessing import SubprocessJsonTagger, SampleRow
 
 
 def test_coerce_json_marks_invalid_model_output_for_review() -> None:
@@ -19,14 +19,16 @@ def test_coerce_json_extracts_fenced_json_block() -> None:
         """
         Here is the result:
         ```json
-        {"caption":"black wool coat","category":["coat","trousers"],"detail":["long wool coat","tailored trousers"],"color":"black","material":"wool","mood":"minimal","review_needed":false,"confidence_note":"high"}
+        {"caption":"black wool coat","category":["coat","trousers"],"silhouette":"tailored","detail":["long wool coat","tailored trousers"],"color":"black","material":"wool","pattern":"solid","texture":"smooth","mood":"minimal","season":"fall","era":"modern","review_needed":false,"confidence_note":"high"}
         ```
         """
     )
 
     assert payload["caption"] == "black wool coat"
     assert payload["category"] == "coat|trousers"
+    assert payload["silhouette"] == "tailored"
     assert payload["detail"] == "long wool coat|tailored trousers"
+    assert payload["season"] == "fall"
     assert payload["review_needed"] is False
 
 
@@ -56,10 +58,15 @@ def test_coerce_json_reads_text_from_generation_result_like_object() -> None:
                 {
                     "caption": "black wool coat",
                     "category": ["coat", "shoes"],
+                    "silhouette": "tailored",
                     "detail": ["long wool coat", "boots"],
                     "color": "black",
                     "material": "wool",
+                    "pattern": "solid",
+                    "texture": "smooth",
                     "mood": "minimal",
+                    "season": "fall",
+                    "era": "modern",
                     "review_needed": False,
                     "confidence_note": "high",
                 }
@@ -69,6 +76,7 @@ def test_coerce_json_reads_text_from_generation_result_like_object() -> None:
 
     assert payload["caption"] == "black wool coat"
     assert payload["category"] == "coat|shoes"
+    assert payload["silhouette"] == "tailored"
     assert payload["detail"] == "long wool coat|boots"
     assert payload["review_needed"] is False
 
@@ -98,10 +106,15 @@ def test_subprocess_json_tagger_reads_structured_stdout(tmp_path: Path) -> None:
                 "print(json.dumps({",
                 "  'caption': 'black wool coat',",
                 "  'category': ['coat', 'trousers'],",
+                "  'silhouette': 'tailored',",
                 "  'detail': ['long wool coat', 'tailored trousers'],",
                 "  'color': 'black',",
                 "  'material': 'wool',",
+                "  'pattern': 'solid',",
+                "  'texture': 'smooth',",
                 "  'mood': 'minimal',",
+                "  'season': 'fall',",
+                "  'era': 'modern',",
                 "  'review_needed': False,",
                 "  'confidence_note': 'high'",
                 "} ))",
@@ -125,5 +138,7 @@ def test_subprocess_json_tagger_reads_structured_stdout(tmp_path: Path) -> None:
 
     assert result.caption == "black wool coat"
     assert result.category == "coat|trousers"
+    assert result.silhouette == "tailored"
     assert result.detail == "long wool coat|tailored trousers"
+    assert result.texture == "smooth"
     assert result.mood == "minimal"
