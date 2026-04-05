@@ -6,6 +6,8 @@ from pathlib import Path
 
 from switch_query.tagging import NormalizedTagRow, write_csv
 from switch_query.v2 import cli
+from switch_query.v2.models import V2ParsedQuery
+import switch_query.v2.pipeline as v2_pipeline
 
 
 class FakeBuildEncoder:
@@ -30,6 +32,39 @@ class FakeQueryEncoder:
         for text in texts:
             vectors.append(mapping.get(text, [1.0, 0.0] if "category: coat" in text else [0.0, 1.0]))
         return vectors
+
+
+class StubParser:
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+    def parse(self, query_text, *, stage, balance_score, user_uploaded_image=None):
+        del stage, balance_score, user_uploaded_image
+        return V2ParsedQuery(
+            query_text=query_text,
+            canonical_tags={
+                "category": "coat",
+                "silhouette": "tailored",
+                "color": "black",
+                "mood": "minimal|sharp",
+            },
+            raw_phrases={
+                "mood": "minimal but sharp",
+                "silhouette": "tailored",
+            },
+            required_features=["category", "color"],
+            preferred_features=["silhouette", "mood"],
+            confidence=0.92,
+            query_document=(
+                "category: coat\n"
+                "silhouette: tailored\n"
+                "color: black\n"
+                "mood: minimal|sharp\n"
+                "raw_mood: minimal but sharp\n"
+                "raw_silhouette: tailored\n"
+                f"query_text: {query_text}"
+            ),
+        )
 
 
 def build_rows(tmp_path: Path) -> list[NormalizedTagRow]:
@@ -121,6 +156,7 @@ def test_build_archive_index_writes_json_index_and_documents(tmp_path: Path, mon
         model_name="fake/siglip2",
         device="cpu",
         batch_size=4,
+        use_embeddings=True,
     )
 
     index_payload = json.loads(index_path.read_text(encoding="utf-8"))
@@ -128,11 +164,35 @@ def test_build_archive_index_writes_json_index_and_documents(tmp_path: Path, mon
 
     assert result.document_count == 2
     assert result.brand_count == 2
+    assert result.embeddings_enabled is True
     assert result.model_name == "fake/siglip2"
     assert result.device == "cpu"
     assert index_payload["documents"][0]["vector"] == [1.0, 0.0]
     assert index_payload["feature_vocabulary"]["color"]["jet black"] == "black"
     assert document_payload[0]["canonical_tags"]["mood"] == "minimal|sharp"
+
+
+def test_build_archive_index_supports_vectorless_mode(tmp_path: Path) -> None:
+    normalized_tags_path = tmp_path / "normalized.csv"
+    index_path = tmp_path / "archive_index.json"
+    write_csv(normalized_tags_path, build_rows(tmp_path))
+
+    result = cli.build_archive_index(
+        normalized_tags_path=str(normalized_tags_path),
+        output_path=str(index_path),
+        documents_output_path=None,
+        model_name=None,
+        device=None,
+        batch_size=4,
+        use_embeddings=False,
+    )
+
+    index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+
+    assert result.embeddings_enabled is False
+    assert result.model_name == ""
+    assert result.device == ""
+    assert index_payload["documents"][0]["vector"] == []
 
 
 def test_build_archive_index_rejects_empty_normalized_csv(tmp_path: Path, monkeypatch) -> None:
@@ -148,6 +208,7 @@ def test_build_archive_index_rejects_empty_normalized_csv(tmp_path: Path, monkey
             model_name="fake/siglip2",
             device="cpu",
             batch_size=4,
+            use_embeddings=True,
         )
     except ValueError as exc:
         assert "No normalized rows found" in str(exc)
@@ -210,7 +271,7 @@ def test_run_query_writes_ranked_csv(tmp_path: Path, monkeypatch) -> None:
     )
     output_path = tmp_path / "results.csv"
 
-    monkeypatch.setattr(cli, "SigLIP2TextEncoder", FakeQueryEncoder)
+    monkeypatch.setattr(cli, "LuxiaQueryParser", StubParser)
 
     result = cli.run_query(
         index_path=str(index_path),
@@ -220,6 +281,7 @@ def test_run_query_writes_ranked_csv(tmp_path: Path, monkeypatch) -> None:
         user_uploaded_image=None,
         output_path=str(output_path),
         html_output_path=None,
+        parser_provider="luxia",
         model_name="fake/siglip2",
         device="cpu",
         batch_size=4,
@@ -228,11 +290,15 @@ def test_run_query_writes_ranked_csv(tmp_path: Path, monkeypatch) -> None:
 
     rows = output_path.read_text(encoding="utf-8").splitlines()
 
-    assert result.result_count == 2
-    assert rows[0] == "rank,image_id,score,brand,season_group,file_path,matched_attributes,mismatched_attributes,missing_attributes,explanation"
+    assert result.result_count == 1
+    assert result.parser_provider == "luxia"
+    assert rows[0] == "rank,image_id,score,brand,season_group,file_path,matched_attributes,mismatched_attributes,missing_attributes,score_breakdown,match_reasons,explanation"
     assert "look-1" in rows[1]
     assert "color=black" in rows[1]
     assert "mood=minimal|sharp" in rows[1]
+    assert "category:exact=+8.0" in rows[1]
+    assert "category exact match" in rows[1]
+    assert all("look-2" not in row for row in rows[1:])
 
 
 def test_run_query_writes_html_preview(tmp_path: Path, monkeypatch) -> None:
@@ -277,7 +343,7 @@ def test_run_query_writes_html_preview(tmp_path: Path, monkeypatch) -> None:
         encoding="utf-8",
     )
     html_output_path = tmp_path / "results.html"
-    monkeypatch.setattr(cli, "SigLIP2TextEncoder", FakeQueryEncoder)
+    monkeypatch.setattr(cli, "LuxiaQueryParser", StubParser)
 
     result = cli.run_query(
         index_path=str(index_path),
@@ -287,6 +353,7 @@ def test_run_query_writes_html_preview(tmp_path: Path, monkeypatch) -> None:
         user_uploaded_image=str(tmp_path / "uploaded.jpg"),
         output_path=None,
         html_output_path=str(html_output_path),
+        parser_provider="luxia",
         model_name="fake/siglip2",
         device="cpu",
         batch_size=4,
@@ -298,5 +365,7 @@ def test_run_query_writes_html_preview(tmp_path: Path, monkeypatch) -> None:
     assert result.html_output_path == str(html_output_path.resolve())
     assert "V2 Retrieval Preview" in html
     assert "Black tailored coat with minimal but sharp mood" in html
-    assert "matched: category=coat" in html
+    assert "matched_required: category=coat, color=black" in html
+    assert "score_breakdown" in html
+    assert "match_reasons" in html
     assert Path(build_rows(tmp_path)[0].file_path).resolve().as_uri() in html

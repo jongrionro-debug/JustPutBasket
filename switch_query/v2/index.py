@@ -10,13 +10,16 @@ from .models import TextEncoder, V2ArchiveDocument, V2ArchiveIndex, V2IndexedDoc
 
 def build_archive_index(
     documents: Sequence[V2ArchiveDocument],
-    encoder: TextEncoder,
+    encoder: TextEncoder | None,
     index_store,
 ) -> V2ArchiveIndex:
-    document_texts = [document.document_text for document in documents]
-    vectors = encoder.encode_text(document_texts)
-    if len(vectors) != len(documents):
-        raise RuntimeError("Text encoder output size did not match archive document count")
+    if encoder is None:
+        vectors = [[] for _ in documents]
+    else:
+        document_texts = [document.document_text for document in documents]
+        vectors = encoder.encode_text(document_texts)
+        if len(vectors) != len(documents):
+            raise RuntimeError("Text encoder output size did not match archive document count")
 
     indexed_documents = [
         V2IndexedDocument(

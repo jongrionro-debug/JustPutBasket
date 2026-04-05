@@ -3,11 +3,13 @@
 from .documents import build_archive_documents, build_feature_vocabulary, load_archive_documents, write_archive_documents
 from .encoder import SigLIP2TextEncoder, SigLIP2TextEncoderConfig
 from .index import build_archive_index
+from .llm_parser import LUXIA_CHAT_URL, LuxiaQueryParser, LuxiaQueryParserConfig
 from .models import (
     ATTRIBUTE_NAMES,
     MULTI_VALUE_ATTRIBUTES,
     MULTI_VALUE_SEPARATOR,
     LocalIndexStore,
+    QueryParser,
     Stage,
     TextEncoder,
     V2ArchiveDocument,
@@ -43,9 +45,9 @@ from .preprocessing import (
     submit_full_tag_batch,
     summarize_raw_tags,
 )
-from .parser import V2QueryParser
 from .pipeline import V2Pipeline, V2PipelineConfig, dense_cosine_similarity
 from .storage import InMemoryArchiveIndex, JsonArchiveIndexStore
+from .tag_ranker import FeatureMatchResult, TagRanker, TagRankerConfig, classify_feature_match
 
 __all__ = [
     "ATTRIBUTE_NAMES",
@@ -54,13 +56,18 @@ __all__ = [
     "DEFAULT_OUTPUT_ROOT",
     "CompletedBatchResult",
     "FullTagStageResult",
+    "FeatureMatchResult",
     "InMemoryArchiveIndex",
     "InventoryStageResult",
     "JsonArchiveIndexStore",
     "LocalIndexStore",
+    "LUXIA_CHAT_URL",
+    "LuxiaQueryParser",
+    "LuxiaQueryParserConfig",
     "MULTI_VALUE_ATTRIBUTES",
     "MULTI_VALUE_SEPARATOR",
     "NormalizeStageResult",
+    "QueryParser",
     "RecoveredFullTagResult",
     "SampleStageResult",
     "SigLIP2TextEncoder",
@@ -68,6 +75,8 @@ __all__ = [
     "Stage",
     "SubmittedBatchResult",
     "TaggingStageSummary",
+    "TagRanker",
+    "TagRankerConfig",
     "TextEncoder",
     "V2ArchiveDocument",
     "V2ArchiveIndex",
@@ -78,13 +87,13 @@ __all__ = [
     "V2PipelineInput",
     "V2PipelineOutput",
     "V2PreprocessingPaths",
-    "V2QueryParser",
     "V2RankedResult",
     "build_archive_documents",
     "build_archive_index",
     "build_feature_vocabulary",
     "build_preprocessing_paths",
     "collect_full_tag_batch",
+    "classify_feature_match",
     "dense_cosine_similarity",
     "load_archive_documents",
     "recover_full_tag_from_logs",

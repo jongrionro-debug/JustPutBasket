@@ -10,10 +10,10 @@ from switch_query.tagging.preprocessing import NormalizedTagRow
 from switch_query.v2 import (
     InMemoryArchiveIndex,
     JsonArchiveIndexStore,
+    V2ParsedQuery,
     V2Pipeline,
     V2PipelineConfig,
     V2PipelineInput,
-    V2QueryParser,
     build_archive_documents,
     build_archive_index,
     build_feature_vocabulary,
@@ -30,6 +30,22 @@ class FakeTextEncoder:
 
     def encode_text(self, texts: list[str]) -> list[list[float]]:
         return [self.vectors[text] for text in texts]
+
+
+class StubParser:
+    def __init__(self, parsed_query: V2ParsedQuery) -> None:
+        self.parsed_query = parsed_query
+
+    def parse(
+        self,
+        query_text: str,
+        *,
+        stage: str,
+        balance_score: float,
+        user_uploaded_image: str | None = None,
+    ) -> V2ParsedQuery:
+        del query_text, stage, balance_score, user_uploaded_image
+        return self.parsed_query
 
 
 def build_rows(tmp_path: Path) -> list[NormalizedTagRow]:
@@ -142,37 +158,6 @@ def test_build_feature_vocabulary_includes_raw_variants(tmp_path: Path) -> None:
     assert vocabulary["category"]["gown"] == "dress"
 
 
-def test_query_parser_extracts_multi_value_tags_and_preserves_raw_phrase(tmp_path: Path) -> None:
-    rows = build_rows(tmp_path)
-    parser = V2QueryParser(build_feature_vocabulary(rows=rows))
-
-    parsed = parser.parse(
-        "Black tailored coat with minimal but sharp mood",
-        stage="mood_board",
-        balance_score=0.0,
-    )
-
-    assert parsed.canonical_tags["color"] == "black"
-    assert parsed.canonical_tags["silhouette"] == "tailored"
-    assert parsed.canonical_tags["mood"] == "minimal|sharp"
-    assert parsed.raw_phrases["mood"] == "minimal but sharp"
-    assert "query_text: Black tailored coat with minimal but sharp mood" in parsed.query_document
-
-
-def test_query_parser_leaves_unknown_fields_empty(tmp_path: Path) -> None:
-    rows = build_rows(tmp_path)
-    parser = V2QueryParser(build_feature_vocabulary(rows=rows))
-
-    parsed = parser.parse(
-        "architectural editorial energy",
-        stage="mood_board",
-        balance_score=0.0,
-    )
-
-    assert parsed.canonical_tags == {}
-    assert parsed.raw_phrases == {}
-
-
 def test_explain_match_splits_matched_mismatched_and_missing() -> None:
     matched, mismatched, missing, explanation = explain_match(
         {"color": "black", "mood": "minimal|sharp", "detail": "wide leg trousers"},
@@ -215,27 +200,28 @@ def test_build_archive_index_writes_json_index(tmp_path: Path) -> None:
 def test_pipeline_runs_end_to_end_and_returns_explanations(tmp_path: Path) -> None:
     documents = build_archive_documents(build_rows(tmp_path))
     query_text = "Black tailored coat with minimal but sharp mood"
-    query_document = (
-        "category: coat\n"
-        "silhouette: tailored\n"
-        "color: black\n"
-        "mood: minimal|sharp\n"
-        "raw_mood: minimal but sharp\n"
-        "raw_silhouette: tailored\n"
-        f"query_text: {query_text}"
-    )
-    encoder = FakeTextEncoder(
-        {
-            documents[0].document_text: [1.0, 0.0],
-            documents[1].document_text: [0.0, 1.0],
-            query_document: [1.0, 0.0],
-        }
-    )
     store = InMemoryArchiveIndex()
-    build_archive_index(documents, encoder, store)
+    build_archive_index(documents, None, store)
+    parsed_query = V2ParsedQuery(
+        query_text=query_text,
+        canonical_tags={
+            "category": "coat",
+            "silhouette": "tailored",
+            "color": "black",
+            "mood": "minimal|sharp",
+        },
+        raw_phrases={
+            "mood": "minimal but sharp",
+            "silhouette": "tailored",
+        },
+        required_features=["category", "color"],
+        preferred_features=["silhouette", "mood"],
+        confidence=0.92,
+        query_document="unused for tag ranking",
+    )
     pipeline = V2Pipeline(
-        encoder=encoder,
         index_store=store,
+        parser=StubParser(parsed_query),
         config=V2PipelineConfig(top_k=2),
     )
 
@@ -250,12 +236,28 @@ def test_pipeline_runs_end_to_end_and_returns_explanations(tmp_path: Path) -> No
 
     assert output.parsed_query.canonical_tags["color"] == "black"
     assert output.top_results[0].image_id == "look-1"
-    assert output.top_results[0].score == pytest.approx(1.0)
+    assert output.top_results[0].score == pytest.approx(21.0)
     assert output.top_results[0].matched_attributes["mood"] == "minimal|sharp"
-    assert output.top_results[0].explanation.startswith("matched:")
+    assert output.top_results[0].score_breakdown == {
+        "category:exact": 8.0,
+        "silhouette:exact": 4.0,
+        "color:exact": 6.0,
+        "mood:exact": 3.0,
+    }
+    assert "category exact match" in output.top_results[0].match_reasons
+    assert output.top_results[0].explanation.startswith("matched_required:")
+    assert "matched_required: category=coat, color=black" in output.top_results[0].explanation
+    assert "matched_preferred: silhouette=tailored, mood=minimal|sharp" in output.top_results[0].explanation
+    assert "missing_required: none" in output.top_results[0].explanation
+    assert "contradictions: none" in output.top_results[0].explanation
+    assert "score_summary: category:exact=+8.0" in output.top_results[0].explanation
+    assert output.parsed_query.required_features == ["category", "color"]
+    assert output.parsed_query.preferred_features == ["silhouette", "mood"]
     assert output.retrieval_metadata["uploaded_image_used_in_scoring"] is False
     assert output.retrieval_metadata["used_uploaded_image"] is True
-    assert [result.image_id for result in output.top_results] == ["look-1", "look-2"]
+    assert output.retrieval_metadata["ranking_mode"] == "tag_rank_first"
+    assert output.retrieval_metadata["rerank_applied"] is False
+    assert [result.image_id for result in output.top_results] == ["look-1"]
 
 
 def test_pipeline_limits_results_to_top_k(tmp_path: Path) -> None:
@@ -267,32 +269,41 @@ def test_pipeline_limits_results_to_top_k(tmp_path: Path) -> None:
             "file_path": str(tmp_path / "look-3.jpg"),
             "filename": "look-3.jpg",
             "brand": "gamma",
+            "caption": "black tailored coat with modern mood",
+            "raw_category": "coat",
+            "raw_silhouette": "sharp tailoring",
+            "raw_color": "jet black",
+            "raw_mood": "minimal",
+            "canonical_category": "coat",
+            "canonical_silhouette": "tailored",
+            "canonical_color": "black",
+            "canonical_mood": "minimal",
         }
     )
     documents = build_archive_documents([rows[0], rows[1], extra_row])
     query_text = "Black tailored coat with minimal but sharp mood"
-    query_document = (
-        "category: coat\n"
-        "silhouette: tailored\n"
-        "color: black\n"
-        "mood: minimal|sharp\n"
-        "raw_mood: minimal but sharp\n"
-        "raw_silhouette: tailored\n"
-        f"query_text: {query_text}"
-    )
-    encoder = FakeTextEncoder(
-        {
-            documents[0].document_text: [1.0, 0.0],
-            documents[1].document_text: [0.0, 1.0],
-            documents[2].document_text: [0.2, 0.8],
-            query_document: [1.0, 0.0],
-        }
-    )
     store = InMemoryArchiveIndex()
-    build_archive_index(documents, encoder, store)
+    build_archive_index(documents, None, store)
+    parsed_query = V2ParsedQuery(
+        query_text=query_text,
+        canonical_tags={
+            "category": "coat",
+            "silhouette": "tailored",
+            "color": "black",
+            "mood": "minimal|sharp",
+        },
+        raw_phrases={
+            "mood": "minimal but sharp",
+            "silhouette": "tailored",
+        },
+        required_features=["category", "color"],
+        preferred_features=["silhouette", "mood"],
+        confidence=0.92,
+        query_document="unused for tag ranking",
+    )
     pipeline = V2Pipeline(
-        encoder=encoder,
         index_store=store,
+        parser=StubParser(parsed_query),
         config=V2PipelineConfig(top_k=2),
     )
 
@@ -306,3 +317,4 @@ def test_pipeline_limits_results_to_top_k(tmp_path: Path) -> None:
 
     assert len(output.top_results) == 2
     assert [result.image_id for result in output.top_results] == ["look-1", "look-3"]
+    assert output.top_results[1].score < output.top_results[0].score

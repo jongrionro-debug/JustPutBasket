@@ -26,6 +26,9 @@ class V2ParsedQuery:
     query_text: str
     canonical_tags: dict[str, str] = field(default_factory=dict)
     raw_phrases: dict[str, str] = field(default_factory=dict)
+    required_features: list[str] = field(default_factory=list)
+    preferred_features: list[str] = field(default_factory=list)
+    confidence: float = 0.0
     query_document: str = ""
 
 
@@ -61,6 +64,8 @@ class V2RankedResult:
     matched_attributes: dict[str, str] = field(default_factory=dict)
     mismatched_attributes: dict[str, str] = field(default_factory=dict)
     missing_attributes: dict[str, str] = field(default_factory=dict)
+    score_breakdown: dict[str, float] = field(default_factory=dict)
+    match_reasons: list[str] = field(default_factory=list)
     explanation: str = ""
 
 
@@ -74,6 +79,18 @@ class V2PipelineOutput:
 class TextEncoder(Protocol):
     def encode_text(self, texts: Sequence[str]) -> list[list[float]]:
         """Return dense vectors for text inputs."""
+
+
+class QueryParser(Protocol):
+    def parse(
+        self,
+        query_text: str,
+        *,
+        stage: str,
+        balance_score: float,
+        user_uploaded_image: str | None = None,
+    ) -> V2ParsedQuery:
+        """Return a structured query representation."""
 
 
 class LocalIndexStore(Protocol):

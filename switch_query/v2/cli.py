@@ -13,6 +13,7 @@ from switch_query.tagging import NormalizedTagRow
 from .documents import build_archive_documents, write_archive_documents
 from .encoder import SigLIP2TextEncoder, SigLIP2TextEncoderConfig
 from .index import build_archive_index as build_v2_archive_index
+from .llm_parser import LuxiaQueryParser
 from .models import V2PipelineInput, V2RankedResult
 from .pipeline import V2Pipeline, V2PipelineConfig
 from .storage import JsonArchiveIndexStore
@@ -23,6 +24,7 @@ class BuildIndexResult:
     normalized_tags_path: str
     output_path: str
     documents_output_path: str | None
+    embeddings_enabled: bool
     model_name: str
     device: str
     batch_size: int
@@ -36,6 +38,7 @@ class RunQueryResult:
     index_path: str
     output_path: str | None
     html_output_path: str | None
+    parser_provider: str
     model_name: str
     device: str
     batch_size: int
@@ -47,9 +50,10 @@ def build_archive_index(
     normalized_tags_path: str,
     output_path: str,
     documents_output_path: str | None,
-    model_name: str,
+    model_name: str | None,
     device: str | None,
     batch_size: int,
+    use_embeddings: bool = False,
 ) -> BuildIndexResult:
     rows = _read_normalized_rows(normalized_tags_path)
     if not rows:
@@ -59,13 +63,19 @@ def build_archive_index(
     if documents_output_path:
         write_archive_documents(documents_output_path, documents)
 
-    encoder = SigLIP2TextEncoder(
-        SigLIP2TextEncoderConfig(
-            model_name=model_name,
-            device=device,
-            batch_size=batch_size,
+    encoder = None
+    resolved_model_name = ""
+    resolved_device = device or ""
+    if use_embeddings:
+        encoder = SigLIP2TextEncoder(
+            SigLIP2TextEncoderConfig(
+                model_name=model_name or "google/siglip2-base-patch16-224",
+                device=device,
+                batch_size=batch_size,
+            )
         )
-    )
+        resolved_model_name = model_name or "google/siglip2-base-patch16-224"
+        resolved_device = encoder.device
     build_v2_archive_index(documents, encoder, JsonArchiveIndexStore(output_path))
     return BuildIndexResult(
         normalized_tags_path=str(Path(normalized_tags_path).resolve()),
@@ -73,8 +83,9 @@ def build_archive_index(
         documents_output_path=str(Path(documents_output_path).resolve())
         if documents_output_path
         else None,
-        model_name=model_name,
-        device=encoder.device,
+        embeddings_enabled=use_embeddings,
+        model_name=resolved_model_name,
+        device=resolved_device,
         batch_size=batch_size,
         document_count=len(documents),
         brand_count=len({row.brand for row in rows}),
@@ -90,21 +101,17 @@ def run_query(
     user_uploaded_image: str | None,
     output_path: str | None,
     html_output_path: str | None,
-    model_name: str,
+    parser_provider: str = "luxia",
+    model_name: str | None,
     device: str | None,
     batch_size: int,
     top_k: int,
 ) -> RunQueryResult:
-    encoder = SigLIP2TextEncoder(
-        SigLIP2TextEncoderConfig(
-            model_name=model_name,
-            device=device,
-            batch_size=batch_size,
-        )
-    )
+    if parser_provider != "luxia":
+        raise ValueError(f"Unsupported parser provider: {parser_provider}")
     pipeline = V2Pipeline(
-        encoder=encoder,
         index_store=JsonArchiveIndexStore(index_path),
+        parser=LuxiaQueryParser() if parser_provider == "luxia" else None,
         config=V2PipelineConfig(top_k=top_k),
     )
     output = pipeline.run(
@@ -129,8 +136,9 @@ def run_query(
         index_path=str(Path(index_path).resolve()),
         output_path=str(Path(output_path).resolve()) if output_path else None,
         html_output_path=str(Path(html_output_path).resolve()) if html_output_path else None,
-        model_name=model_name,
-        device=encoder.device,
+        parser_provider=parser_provider,
+        model_name=model_name or "",
+        device=device or "",
         batch_size=batch_size,
         result_count=len(output.top_results),
     )
@@ -152,6 +160,8 @@ def write_ranked_results_csv(path: str, results: list[V2RankedResult]) -> None:
                 "matched_attributes",
                 "mismatched_attributes",
                 "missing_attributes",
+                "score_breakdown",
+                "match_reasons",
                 "explanation",
             ],
         )
@@ -168,6 +178,8 @@ def write_ranked_results_csv(path: str, results: list[V2RankedResult]) -> None:
                     "matched_attributes": _serialize_dict(result.matched_attributes),
                     "mismatched_attributes": _serialize_dict(result.mismatched_attributes),
                     "missing_attributes": _serialize_dict(result.missing_attributes),
+                    "score_breakdown": _serialize_score_breakdown(result.score_breakdown),
+                    "match_reasons": "|".join(result.match_reasons),
                     "explanation": result.explanation,
                 }
             )
@@ -196,6 +208,8 @@ def write_ranked_results_html(
                 <div><strong>score</strong> {result.score:.6f}</div>
                 <div><strong>season_group</strong> {escape(result.season_group)}</div>
                 <div class="explanation">{escape(result.explanation)}</div>
+                <div><strong>score_breakdown</strong> {escape(_serialize_score_breakdown(result.score_breakdown))}</div>
+                <div><strong>match_reasons</strong> {escape(" | ".join(result.match_reasons) or "none")}</div>
                 <div class="path">{escape(result.file_path)}</div>
               </div>
             </article>
@@ -313,7 +327,16 @@ def main() -> None:
     build_index_parser.add_argument("--normalized-tags", required=True)
     build_index_parser.add_argument("--output", required=True)
     build_index_parser.add_argument("--documents-output")
-    build_index_parser.add_argument("--model-name", default="google/siglip2-base-patch16-224")
+    build_index_parser.add_argument(
+        "--use-embeddings",
+        action="store_true",
+        help="Optional: build document vectors for future rerank experiments.",
+    )
+    build_index_parser.add_argument(
+        "--model-name",
+        default=None,
+        help="Optional embedding model name. Ignored unless --use-embeddings is set.",
+    )
     build_index_parser.add_argument("--device")
     build_index_parser.add_argument("--batch-size", type=int, default=8)
 
@@ -332,7 +355,16 @@ def main() -> None:
     run_query_parser.add_argument("--user-uploaded-image")
     run_query_parser.add_argument("--output")
     run_query_parser.add_argument("--html-output")
-    run_query_parser.add_argument("--model-name", default="google/siglip2-base-patch16-224")
+    run_query_parser.add_argument(
+        "--parser-provider",
+        choices=["luxia"],
+        default="luxia",
+    )
+    run_query_parser.add_argument(
+        "--model-name",
+        default=None,
+        help="Deprecated for query runtime. Query ranking no longer uses embeddings in MVP.",
+    )
     run_query_parser.add_argument("--device")
     run_query_parser.add_argument("--batch-size", type=int, default=8)
     run_query_parser.add_argument("--top-k", type=int, default=20)
@@ -347,6 +379,7 @@ def main() -> None:
             model_name=args.model_name,
             device=args.device,
             batch_size=args.batch_size,
+            use_embeddings=args.use_embeddings,
         )
         print(
             "\n".join(
@@ -354,6 +387,7 @@ def main() -> None:
                     f"normalized_tags_path={result.normalized_tags_path}",
                     f"output_path={result.output_path}",
                     f"documents_output_path={result.documents_output_path or ''}",
+                    f"embeddings_enabled={result.embeddings_enabled}",
                     f"model_name={result.model_name}",
                     f"device={result.device}",
                     f"batch_size={result.batch_size}",
@@ -373,6 +407,7 @@ def main() -> None:
             user_uploaded_image=args.user_uploaded_image,
             output_path=args.output,
             html_output_path=args.html_output,
+            parser_provider=args.parser_provider,
             model_name=args.model_name,
             device=args.device,
             batch_size=args.batch_size,
@@ -385,6 +420,7 @@ def main() -> None:
                     f"index_path={result.index_path}",
                     f"output_path={result.output_path or ''}",
                     f"html_output_path={result.html_output_path or ''}",
+                    f"parser_provider={result.parser_provider}",
                     f"model_name={result.model_name}",
                     f"device={result.device}",
                     f"batch_size={result.batch_size}",
@@ -402,6 +438,10 @@ def _read_normalized_rows(path: str) -> list[NormalizedTagRow]:
 
 def _serialize_dict(payload: dict[str, str]) -> str:
     return "|".join(f"{key}={value}" for key, value in payload.items())
+
+
+def _serialize_score_breakdown(payload: dict[str, float]) -> str:
+    return "|".join(f"{key}={value:+.1f}" for key, value in payload.items())
 
 
 if __name__ == "__main__":
