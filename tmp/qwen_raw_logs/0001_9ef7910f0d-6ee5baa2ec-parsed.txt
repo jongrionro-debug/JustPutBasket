@@ -1,1 +1,0 @@
-{"caption":"black wool coat on runway","category":"coat","color":"black","material":"wool","mood":"minimal","review_needed":false,"confidence_note":"high confidence"}

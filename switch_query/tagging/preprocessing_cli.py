@@ -22,6 +22,7 @@ from .preprocessing import (
     seed_canonical_mappings,
     write_csv,
 )
+from .openai_vlm_tagger import DEFAULT_OPENAI_VISION_MODEL, OpenAIJsonTagger
 
 
 def main() -> None:
@@ -52,7 +53,7 @@ def main() -> None:
     )
     tag_parser.add_argument(
         "--tagger",
-        choices=["blank", "mlx_vlm", "subprocess"],
+        choices=["blank", "mlx_vlm", "openai", "openai-sync", "subprocess"],
         default="blank",
     )
     tag_parser.add_argument("--tagger-command", nargs="+")
@@ -60,6 +61,7 @@ def main() -> None:
         "--model",
         default="mlx-community/Qwen2-VL-2B-Instruct-4bit",
     )
+    tag_parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     tag_parser.add_argument("--raw-output-log-dir")
 
     frequency_parser = subparsers.add_parser("frequency")
@@ -143,6 +145,16 @@ def _build_tagger(args) -> BlankTagger | SubprocessJsonTagger:
         if not args.tagger_command:
             raise ValueError("--tagger-command is required for --tagger subprocess")
         return SubprocessJsonTagger(args.tagger_command)
+    if args.tagger in {"openai", "openai-sync"}:
+        return OpenAIJsonTagger(
+            model=(
+                DEFAULT_OPENAI_VISION_MODEL
+                if args.model == "mlx-community/Qwen2-VL-2B-Instruct-4bit"
+                else args.model
+            ),
+            api_key_env=args.api_key_env,
+            raw_output_log_dir=args.raw_output_log_dir,
+        )
     return SubprocessJsonTagger(
         [
             sys.executable,

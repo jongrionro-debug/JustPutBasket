@@ -10,6 +10,7 @@
 -> 발산 상태에서는 더 다양한 combination이 필요하기에 3~4장, 수렴 상태는 조금 더 수렴해야기에 1장으로 고정
 3. 로컬 clip류 오픈 소스 모델 기반으로 archive속 이미지를 embeddng진행
 4. 이 embedding 기반으로 사용자의 query text input과 생성된 ai 이미지를 기준으로 archive속 1차 top k 이미지 반환
+[V1 pipeline.md]
 
 #### V2 pipeline
 V1 pipeline과 1,2는 동일

@@ -35,11 +35,17 @@ class SigLIP2Encoder(MultimodalEncoder):
     def encode_text(self, texts: Sequence[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for batch in _batched(list(texts), self.config.batch_size):
-            inputs = self.processor(
-                text=batch,
-                padding="max_length",
-                return_tensors="pt",
-            )
+            processor_kwargs: dict[str, Any] = {
+                "text": batch,
+                "padding": True,
+                "truncation": True,
+                "return_tensors": "pt",
+            }
+            tokenizer = getattr(self.processor, "tokenizer", None)
+            model_max_length = getattr(tokenizer, "model_max_length", None)
+            if isinstance(model_max_length, int) and 0 < model_max_length < 1_000_000:
+                processor_kwargs["max_length"] = model_max_length
+            inputs = self.processor(**processor_kwargs)
             vectors.extend(self._encode_features("get_text_features", inputs))
         return vectors
 

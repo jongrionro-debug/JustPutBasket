@@ -30,4 +30,5 @@ packages = [
     "switch_query.image_module",
     "switch_query.tagging",
     "switch_query.v1",
+    "switch_query.v2",
 ]
