@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -369,3 +370,105 @@ def test_run_query_writes_html_preview(tmp_path: Path, monkeypatch) -> None:
     assert "score_breakdown" in html
     assert "match_reasons" in html
     assert Path(build_rows(tmp_path)[0].file_path).resolve().as_uri() in html
+
+
+def test_run_query_set_writes_manifest_and_candidate_judgments(tmp_path: Path, monkeypatch) -> None:
+    create_image(tmp_path / "look-1.jpg")
+    create_image(tmp_path / "look-2.jpg")
+    index_path = tmp_path / "archive_index.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "documents": [
+                    {
+                        "image_id": "look-1",
+                        "file_path": str(tmp_path / "look-1.jpg"),
+                        "brand": "alpha",
+                        "season_group": "spring-ready-to-wear",
+                        "canonical_tags": {
+                            "category": "coat",
+                            "silhouette": "tailored",
+                            "color": "black",
+                            "mood": "minimal|sharp",
+                        },
+                        "raw_tags": {
+                            "mood": "minimal but sharp",
+                            "silhouette": "sharp tailoring",
+                        },
+                        "document_text": "category: coat\nsilhouette: tailored\ncolor: black",
+                        "vector": [1.0, 0.0],
+                    },
+                    {
+                        "image_id": "look-2",
+                        "file_path": str(tmp_path / "look-2.jpg"),
+                        "brand": "beta",
+                        "season_group": "spring-ready-to-wear",
+                        "canonical_tags": {"category": "dress", "color": "red"},
+                        "raw_tags": {"mood": "romantic"},
+                        "document_text": "category: dress\ncolor: red",
+                        "vector": [0.0, 1.0],
+                    },
+                ],
+                "feature_vocabulary": {
+                    "category": {"coat": "coat", "dress": "dress"},
+                    "silhouette": {"tailored": "tailored"},
+                    "color": {"black": "black", "red": "red"},
+                    "material": {},
+                    "pattern": {},
+                    "texture": {},
+                    "mood": {"minimal but sharp": "minimal|sharp", "romantic": "romantic"},
+                    "season": {},
+                    "era": {},
+                    "detail": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    queries_path = tmp_path / "queries.csv"
+    queries_path.write_text(
+        "\n".join(
+            [
+                "query_id,query_text,stage,query_type,expected_failure_type",
+                "q001,Black tailored coat with minimal but sharp mood,mood_board,color_sensitive,item_color_ambiguity",
+                "q002,Another black tailored coat,mood_board,mixed,outfit_level_color_mismatch",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "eval"
+
+    monkeypatch.setattr(cli, "LuxiaQueryParser", StubParser)
+
+    result = cli.run_query_set(
+        index_path=str(index_path),
+        queries_path=str(queries_path),
+        output_dir=str(output_dir),
+        parser_provider="luxia",
+        model_name=None,
+        device=None,
+        batch_size=4,
+        top_k=3,
+    )
+
+    manifest_path = output_dir / "query_manifest.csv"
+    candidate_judgments_path = output_dir / "candidate_judgments.csv"
+    results_dir = output_dir / "results"
+
+    with open(manifest_path, newline="", encoding="utf-8") as handle:
+        manifest_rows = list(csv.DictReader(handle))
+    with open(candidate_judgments_path, newline="", encoding="utf-8") as handle:
+        candidate_rows = list(csv.DictReader(handle))
+
+    assert result.query_count == 2
+    assert result.candidate_count == 2
+    assert manifest_rows[0]["query_id"] == "q001"
+    assert manifest_rows[0]["csv_output_path"].endswith("q001.csv")
+    assert manifest_rows[0]["html_output_path"].endswith("q001.html")
+    assert candidate_rows[0]["query_id"] == "q001"
+    assert candidate_rows[0]["image_id"] == "look-1"
+    assert candidate_rows[0]["label"] == ""
+    assert candidate_rows[0]["failure_type"] == ""
+    assert candidate_rows[0]["notes"] == ""
+    assert (results_dir / "q001.csv").exists()
+    assert (results_dir / "q001.html").exists()
