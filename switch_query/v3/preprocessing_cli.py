@@ -26,6 +26,7 @@ from .preprocessing import (
     write_item_extraction_inputs_jsonl,
 )
 from .item_extractor import LuxiaItemExtractor
+from .models import V3ItemExtractionOutput
 
 
 def _print_progress(*, completed: int, total: int) -> None:
@@ -38,6 +39,17 @@ def _print_progress(*, completed: int, total: int) -> None:
     message = f"\rprogress [{bar}] {completed}/{total} ({ratio * 100:5.1f}%)"
     end = "\n" if completed >= total else ""
     print(message, end=end, file=sys.stderr, flush=True)
+
+
+def _build_failed_output(*, image_id: str, error: Exception) -> V3ItemExtractionOutput:
+    return V3ItemExtractionOutput(
+        items=[],
+        item_confidence=0.0,
+        item_extraction_notes=[
+            f"extraction_failed:{image_id}",
+            f"error:{type(error).__name__}:{error}",
+        ],
+    )
 
 
 def main() -> None:
@@ -80,6 +92,11 @@ def main() -> None:
     extract_parser.add_argument("--model", default="gpt-4o-2024-08-06")
     extract_parser.add_argument("--offset", type=int, default=0)
     extract_parser.add_argument("--limit", type=int)
+    extract_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Append to an existing output JSONL and skip already-written rows.",
+    )
     extract_parser.add_argument(
         "--image-transfer-mode",
         choices=["raw", "safe_resize"],
@@ -176,14 +193,29 @@ def main() -> None:
         extractor.config.max_image_edge = args.max_image_edge
         extractor.config.jpeg_quality = args.jpeg_quality
         output_path = args.output or str(Path(args.inputs).with_name("item_outputs_sample.jsonl"))
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(output_path).write_text("", encoding="utf-8")
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        resume_count = 0
+        if args.resume and output_file.exists():
+            resume_count = sum(1 for line in output_file.open(encoding="utf-8") if line.strip())
+        else:
+            output_file.write_text("", encoding="utf-8")
+        if resume_count:
+            selected_inputs = selected_inputs[resume_count:]
         outputs = []
         total_inputs = len(selected_inputs)
         if total_inputs:
             _print_progress(completed=0, total=total_inputs)
         for index, item in enumerate(selected_inputs, start=1):
-            output = extractor.extract_items(item)
+            try:
+                output = extractor.extract_items(item)
+            except Exception as exc:
+                print(
+                    f"\nwarning: extraction failed for {item.image_id}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                output = _build_failed_output(image_id=item.image_id, error=exc)
             outputs.append(output)
             append_item_extraction_output_jsonl(output_path, output)
             _print_progress(completed=index, total=total_inputs)
@@ -197,6 +229,8 @@ def main() -> None:
                     f"max_image_edge={args.max_image_edge}",
                     f"jpeg_quality={args.jpeg_quality}",
                     f"offset={args.offset}",
+                    f"resume={'yes' if args.resume else 'no'}",
+                    f"resume_skipped={resume_count}",
                     f"input_count={len(selected_inputs)}",
                 ]
             )

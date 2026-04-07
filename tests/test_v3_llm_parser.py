@@ -144,17 +144,66 @@ def test_luxia_v3_query_parser_repairs_minimal_string_shapes(monkeypatch: pytest
 
     assert len(parsed.target_items) == 1
     assert parsed.target_items[0].target_item_id == "item_1"
-    assert parsed.target_items[0].category == "black trousers"
+    assert parsed.target_items[0].category == "trousers"
     assert parsed.target_items[0].raw_phrase == "black trousers"
     assert parsed.target_items[0].color == ["black"]
     assert parsed.target_items[0].silhouette == ["relaxed"]
     assert parsed.target_items[0].style_tags == ["minimal"]
+    assert "color" in parsed.target_items[0].required_attributes
     assert parsed.global_constraints == {"mood": ["clean", "minimal"]}
     assert parsed.style_preferences == {"era": ["modern"]}
     assert parsed.confidence == pytest.approx(0.9)
 
 
-def test_luxia_v3_query_parser_requires_target_items(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_luxia_v3_query_parser_promotes_explicit_vintage_to_style_concept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LUXIA_API_KEY", "secret-key")
+    session = FakeSession(
+        [
+            FakeResponse(
+                json_payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": """
+{
+  "target_items": [
+    {
+      "target_item_id": "item_1",
+      "category": "pants",
+      "silhouette": ["loose"],
+      "raw_phrase": "vintage loose pants"
+    }
+  ],
+  "confidence": 0.91
+}
+"""
+                            }
+                        }
+                    ]
+                }
+            )
+        ]
+    )
+    parser = LuxiaV3QueryParser(
+        config=LuxiaV3QueryParserConfig(),
+        session=session,
+    )
+
+    parsed = parser.parse(
+        "vintage loose pants",
+        stage="mood_board",
+        balance_score=0.0,
+    )
+
+    assert parsed.target_items[0].style_concepts == ["vintage"]
+    assert "style_concepts" in parsed.target_items[0].preferred_attributes
+
+
+def test_luxia_v3_query_parser_recovers_single_item_when_target_items_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("LUXIA_API_KEY", "secret-key")
     session = FakeSession(
         [
@@ -176,15 +225,20 @@ def test_luxia_v3_query_parser_requires_target_items(monkeypatch: pytest.MonkeyP
         session=session,
     )
 
-    with pytest.raises(RuntimeError, match="target_items"):
-        parser.parse(
-            "black trousers",
-            stage="mood_board",
-            balance_score=0.0,
-        )
+    parsed = parser.parse(
+        "black trousers",
+        stage="mood_board",
+        balance_score=0.0,
+    )
+
+    assert len(parsed.target_items) == 1
+    assert parsed.target_items[0].category == "trousers"
+    assert parsed.target_items[0].color == ["black"]
 
 
-def test_luxia_v3_query_parser_requires_target_item_category(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_luxia_v3_query_parser_repairs_missing_single_item_category_from_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("LUXIA_API_KEY", "secret-key")
     session = FakeSession(
         [
@@ -217,12 +271,14 @@ def test_luxia_v3_query_parser_requires_target_item_category(monkeypatch: pytest
         session=session,
     )
 
-    with pytest.raises(RuntimeError, match="missing_target_category"):
-        parser.parse(
-            "black trousers",
-            stage="mood_board",
-            balance_score=0.0,
-        )
+    parsed = parser.parse(
+        "black trousers",
+        stage="mood_board",
+        balance_score=0.0,
+    )
+
+    assert parsed.target_items[0].category == "trousers"
+    assert parsed.target_items[0].color == ["black"]
 
 
 def test_luxia_v3_query_parser_repairs_single_item_attributes_from_style_preferences(

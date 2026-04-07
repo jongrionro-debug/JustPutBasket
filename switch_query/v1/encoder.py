@@ -45,7 +45,12 @@ class SigLIP2Encoder(MultimodalEncoder):
             model_max_length = getattr(tokenizer, "model_max_length", None)
             if isinstance(model_max_length, int) and 0 < model_max_length < 1_000_000:
                 processor_kwargs["max_length"] = model_max_length
-            inputs = self.processor(**processor_kwargs)
+            try:
+                inputs = self.processor(**processor_kwargs)
+            except TypeError:
+                processor_kwargs.pop("max_length", None)
+                processor_kwargs.pop("truncation", None)
+                inputs = self.processor(**processor_kwargs)
             vectors.extend(self._encode_features("get_text_features", inputs))
         return vectors
 

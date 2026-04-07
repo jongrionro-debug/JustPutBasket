@@ -5,11 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import json
 import os
+import re
 import sys
 from typing import Any
 
 import requests
 
+from .concepts import (
+    STYLE_CONCEPT_CANONICALS,
+    dedupe_preserve_order,
+    extract_style_concepts,
+    normalize_token,
+)
 from .models import V3ParsedQuery, V3TargetItem
 from .query_validation import ensure_valid_v3_parsed_query
 
@@ -22,9 +29,11 @@ ITEM_ATTRIBUTE_NAMES = (
     "pattern",
     "texture",
     "style_tags",
+    "style_concepts",
 )
 ATTRIBUTE_PRIORITY_NAMES = tuple(name for name in ITEM_ATTRIBUTE_NAMES if name != "category")
 ITEM_STYLE_TAG_ALIASES = ("style_tags", "styles", "style")
+ITEM_STYLE_CONCEPT_ALIASES = ("style_concepts", "concepts", "mood", "era")
 COLOR_PHRASES = (
     "charcoal",
     "burgundy",
@@ -99,16 +108,51 @@ TEXTURE_PHRASES = (
     "sheer",
     "ribbed",
 )
-STYLE_TAG_PHRASES = (
-    "avant garde",
-    "avant-garde",
-    "contemporary",
-    "minimal",
-    "vintage",
-    "romantic",
-    "elegant",
-    "modern",
-    "sporty",
+MULTI_ITEM_CONNECTORS = (
+    " with ",
+    " and ",
+    " & ",
+    " plus ",
+    " paired with ",
+    " layered with ",
+    " over ",
+    " under ",
+    ", ",
+)
+MULTI_ITEM_SPLIT_PATTERN = re.compile(
+    r"\s(?:with|and|&|plus|paired with|layered with|over|under)\s|,\s*",
+    re.IGNORECASE,
+)
+CATEGORY_ALIASES = {
+    "pant": "pants",
+    "pants": "pants",
+    "trouser": "trousers",
+    "trousers": "trousers",
+    "jean": "jeans",
+    "jeans": "jeans",
+    "jacket": "jacket",
+    "coat": "coat",
+    "blazer": "blazer",
+    "dress": "dress",
+    "skirt": "skirt",
+    "shirt": "shirt",
+    "t shirt": "t shirt",
+    "tee": "t shirt",
+    "top": "top",
+    "blouse": "blouse",
+    "sweater": "sweater",
+    "knit": "knit",
+    "cardigan": "cardigan",
+    "hoodie": "hoodie",
+    "short": "shorts",
+    "shorts": "shorts",
+    "vest": "vest",
+    "waistcoat": "vest",
+    "jumpsuit": "jumpsuit",
+    "trench": "trench",
+}
+CATEGORY_PHRASES = tuple(
+    sorted(CATEGORY_ALIASES.keys(), key=lambda value: (-len(value), value))
 )
 
 
@@ -226,11 +270,14 @@ def _build_messages(query_text: str, *, stage: str, balance_score: float) -> lis
                 "style_preferences, confidence. "
                 "Each target item must contain target_item_id, category, and raw_phrase. "
                 "Allowed item attribute keys are: category, color, silhouette, material, "
-                "pattern, texture, style_tags, required_attributes, preferred_attributes. "
+                "pattern, texture, style_tags, style_concepts, required_attributes, "
+                "preferred_attributes. "
                 "Do not put item attributes at the top level. "
                 "For multi-item queries, split attributes across the correct items. "
                 "If a raw phrase explicitly says a color, silhouette, material, pattern, texture, or style "
                 "for one item, copy that attribute into that item's structured fields. "
+                "Put search concepts like vintage, minimal, romantic, retro, and avant-garde into "
+                "style_concepts, not style_tags. "
                 "Do not leave color empty when the raw phrase says things like 'white trousers' or 'black jacket'. "
                 "For multi-item queries, prefer item-level binding over style_preferences for category, color, "
                 "silhouette, material, pattern, and texture. "
@@ -314,7 +361,13 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _build_parsed_query(query_text: str, payload: dict[str, Any]) -> V3ParsedQuery:
-    target_items = _coerce_target_items(payload.get("target_items"), query_text=query_text)
+    rule_first_targets = _build_rule_first_targets(query_text)
+    try:
+        target_items = _coerce_target_items(payload.get("target_items"), query_text=query_text)
+    except RuntimeError:
+        if not rule_first_targets:
+            raise
+        target_items = list(rule_first_targets)
     global_constraints = _coerce_named_list_map(payload.get("global_constraints"))
     style_preferences = _coerce_named_list_map(payload.get("style_preferences"))
     confidence = _coerce_confidence(payload.get("confidence", 0.0))
@@ -325,6 +378,8 @@ def _build_parsed_query(query_text: str, payload: dict[str, Any]) -> V3ParsedQue
         style_preferences=style_preferences,
         confidence=confidence,
     )
+    if rule_first_targets:
+        parsed_query = _merge_rule_first_targets(parsed_query, rule_first_targets)
     return _repair_query_attribute_binding(parsed_query)
 
 
@@ -347,6 +402,9 @@ def _coerce_target_items(value: Any, *, query_text: str) -> list[V3TargetItem]:
         style_values = []
         for key in ITEM_STYLE_TAG_ALIASES:
             style_values.extend(_coerce_string_list(raw_item.get(key)))
+        concept_values = []
+        for key in ITEM_STYLE_CONCEPT_ALIASES:
+            concept_values.extend(_coerce_string_list(raw_item.get(key)))
 
         target_item = V3TargetItem(
             target_item_id=target_item_id,
@@ -357,6 +415,7 @@ def _coerce_target_items(value: Any, *, query_text: str) -> list[V3TargetItem]:
             pattern=_coerce_string_list(raw_item.get("pattern")),
             texture=_coerce_string_list(raw_item.get("texture")),
             style_tags=_dedupe(style_values),
+            style_concepts=_coerce_style_concept_list(concept_values),
             required_attributes=_coerce_attribute_priority_list(raw_item.get("required_attributes")),
             preferred_attributes=_coerce_attribute_priority_list(raw_item.get("preferred_attributes")),
             raw_phrase=raw_phrase,
@@ -427,6 +486,19 @@ def _coerce_string_list(value: Any) -> list[str]:
     return cleaned
 
 
+def _coerce_style_concept_list(values: list[str]) -> list[str]:
+    inferred: list[str] = []
+    for value in values:
+        extracted = extract_style_concepts(value)
+        if extracted:
+            inferred.extend(extracted)
+            continue
+        normalized = _normalize_value(value)
+        if normalized in STYLE_CONCEPT_CANONICALS:
+            inferred.append(normalized)
+    return dedupe_preserve_order(inferred)
+
+
 def _coerce_string(value: Any) -> str:
     if value is None:
         return ""
@@ -462,6 +534,8 @@ def _repair_query_attribute_binding(parsed_query: V3ParsedQuery) -> V3ParsedQuer
             for feature in ITEM_ATTRIBUTE_NAMES:
                 current_values = list(getattr(repaired_item, feature))
                 if current_values:
+                    repaired_style_preferences.pop(feature, None)
+                    repaired_global_constraints.pop(feature, None)
                     continue
 
                 migrated_values = repaired_style_preferences.pop(feature, None)
@@ -473,6 +547,12 @@ def _repair_query_attribute_binding(parsed_query: V3ParsedQuery) -> V3ParsedQuer
                 repaired_item = replace(repaired_item, **{feature: migrated_values})
 
         repaired_item = _repair_item_attributes_from_raw_phrase(repaired_item)
+        repaired_item = _repair_item_category_from_phrase(
+            repaired_item,
+            fallback_phrase=parsed_query.query_text if single_item_query else "",
+        )
+        repaired_item = _promote_explicit_attribute_priority(repaired_item)
+        repaired_item = _promote_explicit_style_priority(repaired_item)
         repaired_items.append(repaired_item)
 
     if (
@@ -502,7 +582,7 @@ def _repair_item_attributes_from_raw_phrase(item: V3TargetItem) -> V3TargetItem:
         "material": _extract_phrase_matches(phrase, MATERIAL_PHRASES),
         "pattern": _extract_phrase_matches(phrase, PATTERN_PHRASES),
         "texture": _extract_phrase_matches(phrase, TEXTURE_PHRASES),
-        "style_tags": _extract_phrase_matches(phrase, STYLE_TAG_PHRASES),
+        "style_concepts": extract_style_concepts(phrase),
     }
 
     for feature, values in attribute_candidates.items():
@@ -514,6 +594,105 @@ def _repair_item_attributes_from_raw_phrase(item: V3TargetItem) -> V3TargetItem:
     if not updates:
         return item
     return replace(item, **updates)
+
+
+def _build_rule_first_targets(query_text: str) -> list[V3TargetItem]:
+    normalized_query = _normalize_value(query_text)
+    if not normalized_query:
+        return []
+
+    raw_phrases = _split_multi_item_query(normalized_query)
+    if not raw_phrases:
+        raw_phrases = [normalized_query]
+
+    targets: list[V3TargetItem] = []
+    for index, phrase in enumerate(raw_phrases, start=1):
+        category = _infer_category_from_phrase(phrase)
+        if not category:
+            return []
+
+        color = _extract_phrase_matches(phrase, COLOR_PHRASES)
+        silhouette = _extract_phrase_matches(phrase, SILHOUETTE_PHRASES)
+        material = _extract_phrase_matches(phrase, MATERIAL_PHRASES)
+        pattern = _extract_phrase_matches(phrase, PATTERN_PHRASES)
+        texture = _extract_phrase_matches(phrase, TEXTURE_PHRASES)
+        style_concepts = extract_style_concepts(phrase)
+
+        required_attributes: list[str] = []
+        preferred_attributes: list[str] = []
+        for feature, values in (
+            ("color", color),
+            ("silhouette", silhouette),
+            ("material", material),
+            ("pattern", pattern),
+            ("texture", texture),
+        ):
+            if values:
+                required_attributes.append(feature)
+        if style_concepts:
+            preferred_attributes.append("style_concepts")
+
+        targets.append(
+            V3TargetItem(
+                target_item_id=f"item_{index}",
+                category=category,
+                color=color,
+                silhouette=silhouette,
+                material=material,
+                pattern=pattern,
+                texture=texture,
+                style_concepts=style_concepts,
+                required_attributes=required_attributes,
+                preferred_attributes=preferred_attributes,
+                raw_phrase=phrase,
+            )
+        )
+    return targets
+
+
+def _split_multi_item_query(query_text: str) -> list[str]:
+    if not any(connector in f" {query_text} " for connector in MULTI_ITEM_CONNECTORS):
+        return []
+    parts = [
+        _normalize_value(part)
+        for part in MULTI_ITEM_SPLIT_PATTERN.split(query_text)
+    ]
+    return [part for part in parts if part]
+
+
+def _merge_rule_first_targets(
+    parsed_query: V3ParsedQuery,
+    rule_first_targets: list[V3TargetItem],
+) -> V3ParsedQuery:
+    if not rule_first_targets:
+        return parsed_query
+    if len(parsed_query.target_items) != len(rule_first_targets):
+        return replace(parsed_query, target_items=list(rule_first_targets))
+
+    merged_items: list[V3TargetItem] = []
+    for item, rule_first_item in zip(parsed_query.target_items, rule_first_targets, strict=True):
+        merged_required = _dedupe(item.required_attributes + rule_first_item.required_attributes)
+        merged_items.append(
+            replace(
+                item,
+                target_item_id=item.target_item_id or rule_first_item.target_item_id,
+                category=rule_first_item.category or item.category,
+                color=rule_first_item.color or item.color,
+                silhouette=rule_first_item.silhouette or item.silhouette,
+                material=rule_first_item.material or item.material,
+                pattern=rule_first_item.pattern or item.pattern,
+                texture=rule_first_item.texture or item.texture,
+                style_concepts=rule_first_item.style_concepts or item.style_concepts,
+                required_attributes=merged_required,
+                preferred_attributes=[
+                    feature
+                    for feature in _dedupe(item.preferred_attributes + rule_first_item.preferred_attributes)
+                    if feature not in set(merged_required)
+                ],
+                raw_phrase=item.raw_phrase or rule_first_item.raw_phrase,
+            )
+        )
+    return replace(parsed_query, target_items=merged_items)
 
 
 def _extract_phrase_matches(phrase: str, lexicon: tuple[str, ...]) -> list[str]:
@@ -530,6 +709,78 @@ def _extract_phrase_matches(phrase: str, lexicon: tuple[str, ...]) -> list[str]:
     return matches
 
 
+def _infer_category_from_phrase(phrase: str) -> str:
+    padded_phrase = f" {phrase} "
+    for candidate in CATEGORY_PHRASES:
+        normalized_candidate = _normalize_value(candidate)
+        if f" {normalized_candidate} " not in padded_phrase:
+            continue
+        return CATEGORY_ALIASES[candidate]
+    return ""
+
+
+def _repair_item_category_from_phrase(
+    item: V3TargetItem,
+    *,
+    fallback_phrase: str = "",
+) -> V3TargetItem:
+    phrase = _normalize_value(item.raw_phrase or fallback_phrase)
+    inferred_category = _infer_category_from_phrase(phrase)
+    if not inferred_category:
+        return item
+    if item.category == inferred_category:
+        return item
+    return replace(item, category=inferred_category)
+
+
+def _promote_explicit_attribute_priority(item: V3TargetItem) -> V3TargetItem:
+    phrase = _normalize_value(item.raw_phrase)
+    if not phrase:
+        return item
+
+    required_attributes = list(item.required_attributes)
+    preferred_attributes = list(item.preferred_attributes)
+    for feature in ("color", "silhouette", "material", "pattern", "texture"):
+        values = list(getattr(item, feature))
+        explicit_values = [value for value in values if f" {value} " in f" {phrase} "]
+        if not explicit_values:
+            continue
+        if feature not in required_attributes:
+            required_attributes.append(feature)
+        preferred_attributes = [value for value in preferred_attributes if value != feature]
+
+    return replace(
+        item,
+        required_attributes=required_attributes,
+        preferred_attributes=preferred_attributes,
+    )
+
+
+def _promote_explicit_style_priority(item: V3TargetItem) -> V3TargetItem:
+    phrase = _normalize_value(item.raw_phrase)
+    if not phrase or not item.style_concepts:
+        return item
+
+    explicit_concepts = [
+        style_concept
+        for style_concept in item.style_concepts
+        if f" {style_concept} " in f" {phrase} "
+    ]
+    if not explicit_concepts:
+        return item
+
+    required_attributes = list(item.required_attributes)
+    preferred_attributes = list(item.preferred_attributes)
+    if "style_concepts" not in required_attributes and "style_concepts" not in preferred_attributes:
+        preferred_attributes.append("style_concepts")
+
+    return replace(
+        item,
+        required_attributes=required_attributes,
+        preferred_attributes=preferred_attributes,
+    )
+
+
 def _dedupe(values: list[str]) -> list[str]:
     normalized: list[str] = []
     for value in values:
@@ -539,7 +790,7 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 def _normalize_value(value: str) -> str:
-    return " ".join(value.lower().replace("-", " ").split())
+    return normalize_token(value)
 
 
 def _debug_log(label: str, payload: Any) -> None:

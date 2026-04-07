@@ -5,16 +5,18 @@ from pathlib import Path
 
 from switch_query.tagging import NormalizedTagRow, write_csv
 from switch_query.v3.preprocessing import (
+    backfill_archive_document_style_tags,
     build_item_extraction_inputs,
     build_preprocessing_paths,
     merge_item_inputs_and_outputs,
+    read_archive_documents_jsonl,
     slice_item_extraction_inputs,
     read_normalized_tag_rows,
     write_archive_documents_jsonl,
     write_item_extraction_inputs_jsonl,
     write_item_extraction_outputs_jsonl,
 )
-from switch_query.v3.models import V3DocumentItem, V3ItemExtractionOutput
+from switch_query.v3.models import V3ArchiveDocument, V3DocumentItem, V3ItemExtractionOutput
 
 
 def test_v3_preprocessing_builds_item_input_jsonl(tmp_path: Path) -> None:
@@ -192,3 +194,82 @@ def test_v3_preprocessing_supports_offset_slicing_for_chunk_runs(tmp_path: Path)
     assert len(inputs) == 3
     assert len(sliced_inputs) == 1
     assert sliced_inputs[0].image_id.endswith(":0001")
+
+
+def test_v3_preprocessing_reads_archive_documents_jsonl(tmp_path: Path) -> None:
+    documents_path = tmp_path / "item_enriched_documents.jsonl"
+    documents_path.write_text(
+        json.dumps(
+            {
+                "image_id": "look-1",
+                "file_path": "/tmp/look-1.jpg",
+                "brand": "alpha",
+                "season_group": "spring-ready-to-wear",
+                "canonical_tags": {"category": "coat", "color": "black"},
+                "raw_tags": {"mood": "minimal"},
+                "detail": "minimal black coat",
+                "items": [
+                    {
+                        "item_id": "look-1#1",
+                        "category": "coat",
+                        "color": ["black"],
+                        "silhouette": [],
+                        "material": [],
+                        "pattern": [],
+                        "texture": [],
+                        "style_tags": ["minimal"],
+                        "confidence": 0.91,
+                        "evidence": ["detail:minimal black coat"],
+                        "source": "test",
+                    }
+                ],
+                "item_confidence": 0.91,
+                "item_extraction_notes": ["single item"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    documents = read_archive_documents_jsonl(str(documents_path))
+
+    assert len(documents) == 1
+    assert documents[0].image_id == "look-1"
+    assert documents[0].items[0].category == "coat"
+    assert documents[0].item_extraction_notes == ["single item"]
+
+
+def test_v3_preprocessing_backfills_style_tags_from_document_context() -> None:
+    documents = [
+        V3ArchiveDocument(
+            image_id="look-2",
+            file_path="/tmp/look-2.jpg",
+            brand="alpha",
+            season_group="spring-ready-to-wear",
+            canonical_tags={"era": "vintage"},
+            raw_tags={"mood": "vintage worn-in"},
+            detail="vintage washed pants",
+            items=[
+                V3DocumentItem(
+                    item_id="look-2#1",
+                    category="pants",
+                    color=[],
+                    silhouette=[],
+                    material=[],
+                    pattern=[],
+                    texture=[],
+                    style_tags=[],
+                    confidence=0.8,
+                    evidence=[],
+                    source="test",
+                )
+            ],
+            item_confidence=0.8,
+            item_extraction_notes=[],
+        )
+    ]
+
+    updated = backfill_archive_document_style_tags(documents)
+
+    assert updated[0].items[0].style_concepts == ["vintage"]
+    assert "item attributes backfilled from canonical/raw mood-era-detail context" in updated[0].item_extraction_notes

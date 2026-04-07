@@ -92,7 +92,7 @@ def test_extract_inputs_cli_prints_progress_and_writes_outputs(
     assert len(payload_lines) == 2
 
 
-def test_extract_inputs_cli_persists_completed_rows_before_failure(
+def test_extract_inputs_cli_persists_failure_placeholder_and_continues(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -156,11 +156,15 @@ def test_extract_inputs_cli_persists_completed_rows_before_failure(
         ],
     )
 
-    with pytest.raises(RuntimeError, match="boom"):
-        preprocessing_cli.main()
+    preprocessing_cli.main()
 
     payload_lines = output_path.read_text(encoding="utf-8").splitlines()
-    assert len(payload_lines) == 1
+    assert len(payload_lines) == 2
+    first = json.loads(payload_lines[0])
+    second = json.loads(payload_lines[1])
+    assert first["items"][0]["category"] == "coat"
+    assert second["items"] == []
+    assert second["item_extraction_notes"][0] == "extraction_failed:look-2"
 
 
 def test_probe_batch_cli_prints_probe_summary(monkeypatch, capsys) -> None:
@@ -276,4 +280,3 @@ def test_submit_batch_probe_cli_prints_attempts(monkeypatch, capsys) -> None:
     assert "attempt_count=2" in stdout
     assert "step=upload endpoint=files_create classification=success" in stdout
     assert "batch_id=batch-probe-1" in stdout
-

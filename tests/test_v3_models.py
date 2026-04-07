@@ -199,6 +199,7 @@ def test_parse_luxia_item_extraction_response_coerces_structured_items() -> None
     assert len(output.items) == 1
     assert output.items[0].item_id == "2026:spring-ready-to-wear:test-brand:0009#1"
     assert output.items[0].category == "jacket"
-    assert output.items[0].style_tags == ["vintage"]
+    assert output.items[0].style_tags == []
+    assert output.items[0].style_concepts == ["vintage"]
     assert output.item_confidence == 0.88
     assert output.item_extraction_notes == ["validated from image"]

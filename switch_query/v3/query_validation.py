@@ -16,6 +16,7 @@ ITEM_ATTRIBUTE_KEYS = frozenset(
         "pattern",
         "texture",
         "style_tags",
+        "style_concepts",
     }
 )
 

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Protocol, Sequence
 
 ExtractionMode = Literal["text_only", "image_assisted"]
+Stage = Literal["mood_board", "sketch_stage"]
+V3CandidateMode = Literal["symbolic_only", "embedding_only", "union"]
 V3ItemMatchStatus = Literal[
     "exact",
     "partial",
@@ -28,6 +30,7 @@ class V3TargetItem:
     pattern: list[str] = field(default_factory=list)
     texture: list[str] = field(default_factory=list)
     style_tags: list[str] = field(default_factory=list)
+    style_concepts: list[str] = field(default_factory=list)
     required_attributes: list[str] = field(default_factory=list)
     preferred_attributes: list[str] = field(default_factory=list)
     raw_phrase: str = ""
@@ -71,6 +74,7 @@ class V3DocumentItem:
     pattern: list[str] = field(default_factory=list)
     texture: list[str] = field(default_factory=list)
     style_tags: list[str] = field(default_factory=list)
+    style_concepts: list[str] = field(default_factory=list)
     confidence: float = 0.0
     evidence: list[str] = field(default_factory=list)
     source: str = ""
@@ -117,6 +121,40 @@ class V3ArchiveIndex:
 
 
 @dataclass(slots=True)
+class V3PipelineInput:
+    """Runtime query input for the V3 retrieval pipeline."""
+
+    query_text: str
+    stage: Stage
+    balance_score: float
+    user_uploaded_image: str | None = None
+
+
+@dataclass(slots=True)
+class V3EmbeddingCandidate:
+    """Dense embedding candidate selected during recall."""
+
+    image_id: str
+    embedding_score: float
+    embedding_rank: int
+
+
+@dataclass(slots=True)
+class V3CandidateTrace:
+    """Per-document provenance across symbolic and embedding candidate pools."""
+
+    image_id: str
+    in_symbolic_pool: bool = False
+    in_embedding_pool: bool = False
+    symbolic_rank: int | None = None
+    symbolic_score: float | None = None
+    embedding_rank: int | None = None
+    embedding_score: float | None = None
+    final_rank: int | None = None
+    final_score: float | None = None
+
+
+@dataclass(slots=True)
 class V3ItemAssignment:
     """Per-target item match result for one ranked document."""
 
@@ -146,3 +184,33 @@ class V3RankedResult:
     match_reasons: list[str] = field(default_factory=list)
     explanation: str = ""
     item_assignments: list[V3ItemAssignment] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class V3PipelineOutput:
+    """Pipeline output plus candidate provenance metadata."""
+
+    parsed_query: V3ParsedQuery
+    top_results: list[V3RankedResult]
+    candidate_traces: list[V3CandidateTrace] = field(default_factory=list)
+    retrieval_metadata: dict[str, object] = field(default_factory=dict)
+
+
+class MultimodalEncoder(Protocol):
+    """Shared text/image encoder contract for V3 retrieval."""
+
+    def encode_text(self, texts: Sequence[str]) -> list[list[float]]:
+        """Return dense vectors for query texts."""
+
+    def encode_image(self, image_paths: Sequence[str]) -> list[list[float]]:
+        """Return dense vectors for archive images."""
+
+
+class LocalIndexStore(Protocol):
+    """Persistent storage contract for the V3 archive index."""
+
+    def save(self, index: V3ArchiveIndex) -> None:
+        """Persist the V3 archive index."""
+
+    def load(self) -> V3ArchiveIndex:
+        """Load the V3 archive index."""

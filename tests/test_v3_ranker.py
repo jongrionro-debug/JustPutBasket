@@ -34,6 +34,7 @@ def build_target_item(
     color: list[str] | None = None,
     silhouette: list[str] | None = None,
     style_tags: list[str] | None = None,
+    style_concepts: list[str] | None = None,
     required_attributes: list[str] | None = None,
     preferred_attributes: list[str] | None = None,
     raw_phrase: str | None = None,
@@ -44,6 +45,7 @@ def build_target_item(
         color=color or [],
         silhouette=silhouette or [],
         style_tags=style_tags or [],
+        style_concepts=style_concepts or [],
         required_attributes=required_attributes or [],
         preferred_attributes=preferred_attributes or [],
         raw_phrase=raw_phrase or category,
@@ -57,6 +59,7 @@ def build_item(
     color: list[str] | None = None,
     silhouette: list[str] | None = None,
     style_tags: list[str] | None = None,
+    style_concepts: list[str] | None = None,
 ) -> V3DocumentItem:
     return V3DocumentItem(
         item_id=item_id,
@@ -64,6 +67,7 @@ def build_item(
         color=color or [],
         silhouette=silhouette or [],
         style_tags=style_tags or [],
+        style_concepts=style_concepts or [],
         confidence=0.9,
         evidence=[],
         source="test_fixture",
@@ -176,9 +180,8 @@ def test_v3_ranker_prefers_full_multi_item_match_over_partial_result() -> None:
 
     results = rank_documents(query, [partial_document, full_document])
 
-    assert [result.image_id for result in results] == ["full", "partial"]
+    assert [result.image_id for result in results] == ["full"]
     assert results[0].score_breakdown["coverage:full_item_set"] == 12.0
-    assert [assignment.status for assignment in results[1].item_assignments] == ["exact", "missing"]
 
 
 def test_v3_ranker_marks_cross_item_swap_as_hard_fail() -> None:
@@ -250,7 +253,7 @@ def test_v3_ranker_uses_fallback_only_when_items_are_missing() -> None:
 
     results = rank_documents(query, [missing_document, fallback_document])
 
-    assert [result.image_id for result in results] == ["fallback", "missing"]
+    assert [result.image_id for result in results] == ["fallback"]
     assert results[0].item_assignments[0].status == "fallback_match"
     assert results[0].item_assignments[0].source == "fallback"
 
@@ -306,9 +309,8 @@ def test_v3_ranker_respects_required_attributes_more_than_non_required() -> None
 
     results = rank_documents(query, [missing_color_document, matched_document])
 
-    assert [result.image_id for result in results] == ["matched", "missing-color"]
+    assert [result.image_id for result in results] == ["matched"]
     assert results[0].score_breakdown["item:item_1:color:required_bonus"] == 2.0
-    assert results[1].score_breakdown["item:item_1:color:missing_required"] == -6.0
 
 
 def test_v3_ranker_uses_preferred_attributes_as_soft_bonus() -> None:
@@ -347,6 +349,56 @@ def test_v3_ranker_uses_preferred_attributes_as_soft_bonus() -> None:
     assert [result.image_id for result in results] == ["preferred", "plain"]
     assert results[0].score_breakdown["item:item_1:style_tags:preferred_bonus"] == 1.0
     assert results[1].item_assignments[0].status == "partial"
+
+
+def test_v3_ranker_blocks_partial_match_when_required_query_content_is_missing() -> None:
+    query = build_query(
+        query_text="black trousers",
+        target_items=[
+            build_target_item(
+                "item_1",
+                category="trousers",
+                color=["black"],
+                required_attributes=["category", "color"],
+                raw_phrase="black trousers",
+            )
+        ],
+    )
+    missing_color_document = build_document(
+        "missing-color",
+        items=[build_item("missing-color#1", category="trousers")],
+    )
+
+    results = rank_documents(query, [missing_color_document])
+
+    assert results == []
+
+
+def test_v3_ranker_does_not_grant_full_coverage_bonus_to_partial_single_item_match() -> None:
+    query = build_query(
+        query_text="black minimal trousers",
+        target_items=[
+            build_target_item(
+                "item_1",
+                category="trousers",
+                color=["black"],
+                style_tags=["minimal"],
+                required_attributes=["category", "color"],
+                preferred_attributes=["style_tags"],
+                raw_phrase="black minimal trousers",
+            )
+        ],
+    )
+    partial_document = build_document(
+        "partial",
+        items=[build_item("partial#1", category="trousers", color=["black"])],
+    )
+
+    results = rank_documents(query, [partial_document])
+
+    assert len(results) == 1
+    assert results[0].item_assignments[0].status == "partial"
+    assert "coverage:full_item_set" not in results[0].score_breakdown
 
 
 def test_v3_ranker_applies_global_and_style_bonus_as_auxiliary_signal() -> None:
@@ -474,3 +526,60 @@ def test_v3_ranker_uses_v2_style_tie_breaking_for_identical_scores() -> None:
 
     assert [result.image_id for result in results] == ["a-look", "b-look"]
     assert results[0].score == results[1].score
+
+
+def test_v3_ranker_uses_inferred_document_vintage_style_concepts_for_required_match() -> None:
+    query = build_query(
+        query_text="vintage loose pants",
+        target_items=[
+            build_target_item(
+                "item_1",
+                category="pants",
+                silhouette=["loose"],
+                style_concepts=["vintage"],
+                required_attributes=["category", "style_concepts"],
+                raw_phrase="vintage loose pants",
+            )
+        ],
+    )
+    inferred_vintage_document = build_document(
+        "inferred-vintage",
+        canonical_tags={"era": "vintage"},
+        detail="washed vintage loose pants",
+        items=[build_item("inferred-vintage#1", category="pants", silhouette=["loose"])],
+    )
+    plain_document = build_document(
+        "plain",
+        detail="loose pants",
+        items=[build_item("plain#1", category="pants", silhouette=["loose"])],
+    )
+
+    results = rank_documents(query, [plain_document, inferred_vintage_document])
+
+    assert [result.image_id for result in results] == ["inferred-vintage"]
+    assert results[0].item_assignments[0].matched_attributes["style_concepts"] == "vintage"
+    assert results[0].score_breakdown["item:item_1:style_concepts:exact"] == 2.0
+
+
+def test_v3_ranker_blocks_required_vintage_style_concept_contradiction() -> None:
+    query = build_query(
+        query_text="vintage pants",
+        target_items=[
+            build_target_item(
+                "item_1",
+                category="pants",
+                style_concepts=["vintage"],
+                required_attributes=["category", "style_concepts"],
+                raw_phrase="vintage pants",
+            )
+        ],
+    )
+    contradictory_document = build_document(
+        "modern",
+        canonical_tags={"era": "modern"},
+        items=[build_item("modern#1", category="pants", style_concepts=["modern"])],
+    )
+
+    results = rank_documents(query, [contradictory_document])
+
+    assert results == []

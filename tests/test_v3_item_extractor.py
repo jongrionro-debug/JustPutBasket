@@ -52,7 +52,7 @@ def test_build_luxia_item_extraction_request_keeps_text_only_as_text(tmp_path: P
     assert len(user_content) == 1
     assert user_content[0]["type"] == "text"
     prompt_text = user_content[0]["text"]
-    assert "Do not include evidence, source, item_extraction_notes" in prompt_text
+    assert "Never put vintage, minimal, romantic, avant-garde, retro, edgy, elegant, modern, sporty into style_tags." in prompt_text
     assert '"items":[{"category":"","confidence":0.0}]' in prompt_text
 
 
@@ -161,7 +161,8 @@ def test_parse_luxia_item_extraction_response_reads_openai_style_content() -> No
 
     assert len(output.items) == 1
     assert output.items[0].item_id == "2026:spring-ready-to-wear:test-brand:0009#1"
-    assert output.items[0].style_tags == ["vintage"]
+    assert output.items[0].style_tags == []
+    assert output.items[0].style_concepts == ["vintage"]
     assert output.items[0].source == "luxia_image_assisted"
     assert output.item_confidence == 0.88
 
@@ -185,10 +186,35 @@ def test_parse_luxia_item_extraction_response_defaults_missing_compact_fields() 
 
     assert len(output.items) == 1
     assert output.items[0].category == "dress"
-    assert output.items[0].style_tags == ["romantic"]
+    assert output.items[0].style_tags == []
+    assert output.items[0].style_concepts == ["romantic"]
     assert output.items[0].evidence == []
     assert output.items[0].source == "luxia_image_assisted"
     assert output.item_extraction_notes == []
+
+
+def test_parse_luxia_item_extraction_response_moves_concepts_out_of_style_tags() -> None:
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        '{"items":[{"category":"dress","style_tags":["avant-garde","cropped"],'
+                        '"style_concepts":[],"confidence":0.72}],"item_confidence":0.72}'
+                    )
+                }
+            }
+        ]
+    }
+
+    output = parse_luxia_item_extraction_response(
+        response,
+        image_id="2026:spring-ready-to-wear:test-brand:concept-cleanup",
+        extraction_mode="image_assisted",
+    )
+
+    assert output.items[0].style_tags == ["cropped"]
+    assert output.items[0].style_concepts == ["avant garde"]
 
 
 def test_parse_luxia_item_extraction_response_accepts_trailing_text_after_json() -> None:
@@ -276,3 +302,45 @@ def test_luxia_item_extractor_requires_api_key(tmp_path: Path, monkeypatch: pyte
 
     with pytest.raises(RuntimeError, match="LUXIA_API_KEY is required"):
         extractor.extract_items(build_input(tmp_path, extraction_mode="text_only"))
+
+
+def test_luxia_item_extractor_enriches_style_concepts_from_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_input = build_input(tmp_path, extraction_mode="text_only")
+    extraction_input = V3ItemExtractionInput(
+        image_id=base_input.image_id,
+        file_path=base_input.file_path,
+        brand=base_input.brand,
+        season_group=base_input.season_group,
+        canonical_tags={"category": "pants", "era": "vintage"},
+        raw_tags={"mood": "vintage worn-in"},
+        detail="vintage loose pants with a washed finish",
+        image_path=base_input.image_path,
+        extraction_mode=base_input.extraction_mode,
+    )
+    transport = FakeTransport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"items":[{"category":"pants","style_tags":[],"confidence":0.81}],'
+                            '"item_confidence":0.81,"item_extraction_notes":["llm output"]}'
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setenv("LUXIA_API_KEY", "secret-key")
+    extractor = LuxiaItemExtractor(
+        config=LuxiaItemExtractorConfig(model="gpt-4o-2024-08-06"),
+        transport=transport,
+    )
+
+    output = extractor.extract_items(extraction_input)
+
+    assert output.items[0].style_concepts == ["vintage"]
+    assert "items enriched from canonical/raw mood-era-detail context" in output.item_extraction_notes

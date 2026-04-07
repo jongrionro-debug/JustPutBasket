@@ -13,6 +13,14 @@ from urllib import error, request
 
 from switch_query.tagging.preprocessing import NormalizedTagRow
 
+from .concepts import (
+    COLOR_TOKENS,
+    extract_color_style_tags,
+    extract_style_concepts,
+    is_apparel_category,
+    normalize_token,
+    split_multi_value_text,
+)
 from .models import (
     V3ArchiveDocument,
     V3DocumentItem,
@@ -22,6 +30,32 @@ from .models import (
 
 LUXIA_OPENAI_CHAT_URL = "https://bridge.luxiacloud.com/llm/openai/chat/completions/gpt-4o/create"
 DEFAULT_IMAGE_TRANSFER_MODE = "safe_resize"
+CONTEXT_ENRICHMENT_NOTE = "items enriched from canonical/raw mood-era-detail context"
+COLOR_REQUIRED_CATEGORY_HINTS = frozenset(
+    {
+        "bag",
+        "blazer",
+        "blouse",
+        "boots",
+        "cardigan",
+        "coat",
+        "dress",
+        "handbag",
+        "hat",
+        "jacket",
+        "jeans",
+        "pants",
+        "sandals",
+        "shirt",
+        "shoes",
+        "shorts",
+        "skirt",
+        "sweater",
+        "top",
+        "trousers",
+        "vest",
+    }
+)
 
 
 class ItemExtractor(Protocol):
@@ -100,11 +134,12 @@ class LuxiaItemExtractor:
         )
         assert self.transport is not None
         response = self.transport.post_json(self.config.api_url, payload, api_key=api_key)
-        return parse_luxia_item_extraction_response(
+        extraction_output = parse_luxia_item_extraction_response(
             response,
             image_id=extraction_input.image_id,
             extraction_mode=extraction_input.extraction_mode,
         )
+        return _enrich_items_from_input(extraction_output, extraction_input)
 
 
 def extraction_input_from_normalized_row(
@@ -190,7 +225,8 @@ def build_luxia_item_extraction_request(
                 "content": (
                     "You are extracting item-level fashion structure from one runway look. "
                     "Return compact JSON only and no prose. "
-                    "Do not include empty arrays, nulls, evidence, source, or notes."
+                    "Keep item-level attributes tied to the correct visible item. "
+                    "Do not include empty arrays, nulls, source, or notes."
                 ),
             },
             {
@@ -234,6 +270,7 @@ def parse_luxia_item_extraction_response(
                 pattern=_coerce_string_list(raw_item.get("pattern")),
                 texture=_coerce_string_list(raw_item.get("texture")),
                 style_tags=_coerce_string_list(raw_item.get("style_tags")),
+                style_concepts=_coerce_style_concept_list(raw_item.get("style_concepts")),
                 confidence=_coerce_float(raw_item.get("confidence")),
                 evidence=_coerce_string_list(raw_item.get("evidence")),
                 source=_coerce_string(raw_item.get("source")) or default_source,
@@ -241,7 +278,7 @@ def parse_luxia_item_extraction_response(
         )
 
     return V3ItemExtractionOutput(
-        items=items,
+        items=_normalize_item_style_fields(items),
         item_confidence=_coerce_float(payload.get("item_confidence")),
         item_extraction_notes=_coerce_string_list(payload.get("item_extraction_notes")),
     )
@@ -253,12 +290,55 @@ def _build_extraction_prompt(extraction_input: V3ItemExtractionInput) -> str:
     context_lines = [
         "Extract item-level fashion structure from one runway look.",
         'Return only valid compact JSON with this shape: {"items":[{"category":"","confidence":0.0}],"item_confidence":0.0}',
-        "Optional item keys only when non-empty: color, silhouette, material, pattern, texture, style_tags.",
-        "Split the look into individual wearable items when possible.",
-        "Attach color and silhouette to the correct item, not to the whole outfit.",
-        "If an attribute belongs to a different item, do not copy it across items.",
-        "If uncertain, leave the attribute empty or lower the confidence.",
-        "Do not include evidence, source, item_extraction_notes, empty arrays, or null values.",
+        "Optional item keys only when non-empty: color, silhouette, material, pattern, texture, style_tags, style_concepts, evidence.",
+        "",
+        "Follow this exact process internally before you answer:",
+        "1. Identify every visible wearable item in the look.",
+        "2. Assign one category to each visible item.",
+        "3. Fill item-specific attributes for each item only.",
+        "4. Separate style_tags from style_concepts.",
+        "5. Return compact JSON only.",
+        "",
+        "Priority of evidence:",
+        "1. Trust the image first.",
+        "2. Use detail text as secondary support.",
+        "3. Use canonical_tags and raw_tags only as weak hints.",
+        "",
+        "Definitions:",
+        "style_concepts = high-level search concepts such as vintage, minimal, romantic, avant-garde, retro.",
+        "style_tags = item-specific descriptors such as peep-toe, double-breasted, cropped, lace-up, open-toe, embellished.",
+        "color = visible dominant color(s) of this item only, maximum 2 values.",
+        "",
+        "Hard rules:",
+        "Never copy outfit-level color to every item.",
+        "Never copy one item's attributes onto another item.",
+        "Never put vintage, minimal, romantic, avant-garde, retro, edgy, elegant, modern, sporty into style_tags.",
+        "If bag, shoes, belt, hat, or other visible accessories are present, keep them as separate items.",
+        "For clearly visible apparel, bags, and shoes, always predict at least one dominant color.",
+        "Leave color empty only when the item is heavily occluded, highly transparent, metallic-reflective, or genuinely indeterminate.",
+        "If pattern or texture is visible but color is not reliable, keep pattern or texture and leave color empty.",
+        "Use arrays only when an attribute truly has multiple distinct values.",
+        "Keep values short and literal.",
+        "",
+        "Field guidance:",
+        "category: required for every item.",
+        "confidence: required for every item.",
+        "evidence: short visual phrase for why this item exists or why a key attribute was chosen.",
+        "For top, dress, jacket, coat, shirt, blouse, knit, trousers, pants, skirt, shorts, bag, handbag, shoes, boots, and sandals, color should usually be present.",
+        "pattern examples: snakeskin, floral, plaid, striped, studs.",
+        "texture examples: feathered, sheer, ribbed, smooth, quilted.",
+        "material examples: leather, satin, denim, wool, lace, knit.",
+        "",
+        "Do not include source or item_extraction_notes in the JSON.",
+        "Do not include empty arrays or null values unless the field is required by the schema example.",
+        "",
+        "Few-shot guidance:",
+        'Example A input detail: "pink camisole|snakeskin midi skirt|red leather handbag"',
+        'Example A output idea: top.color=["pink"], skirt.pattern=["snakeskin"], bag.color=["red"]',
+        'Example B input detail: "vintage washed jacket|black trousers"',
+        'Example B output idea: jacket.style_concepts=["vintage"], trousers.color=["black"]',
+        'Example C input detail: "white top|black skirt|two-tone heels"',
+        'Example C output idea: shoes.style_tags=["two-tone"] and shoes.color may contain white and black if both are clearly visible',
         "",
         f"image_id: {extraction_input.image_id}",
         f"brand: {extraction_input.brand}",
@@ -269,7 +349,7 @@ def _build_extraction_prompt(extraction_input: V3ItemExtractionInput) -> str:
         f"extraction_mode: {extraction_input.extraction_mode}",
         "",
         "Each item must include category and confidence.",
-        "Keep values short and use arrays only when an attribute has multiple distinct values.",
+        "Return JSON only. No markdown. No prose.",
     ]
     return "\n".join(context_lines)
 
@@ -436,6 +516,47 @@ def _coerce_string_list(value: object) -> list[str]:
     return []
 
 
+def _coerce_style_concept_list(value: object) -> list[str]:
+    concepts = _coerce_string_list(value)
+    inferred: list[str] = []
+    for concept in concepts:
+        extracted = extract_style_concepts(concept)
+        if extracted:
+            for extracted_concept in extracted:
+                if extracted_concept not in inferred:
+                    inferred.append(extracted_concept)
+            continue
+        normalized = normalize_token(concept)
+        if normalized and normalized not in inferred:
+            inferred.append(normalized)
+    return inferred
+
+
+def _normalize_item_style_fields(items: list[V3DocumentItem]) -> list[V3DocumentItem]:
+    normalized_items: list[V3DocumentItem] = []
+    for item in items:
+        migrated_concepts = list(item.style_concepts)
+        normalized_style_tags: list[str] = []
+        for style_tag in item.style_tags:
+            extracted_concepts = extract_style_concepts(style_tag)
+            if extracted_concepts:
+                for style_concept in extracted_concepts:
+                    if style_concept not in migrated_concepts:
+                        migrated_concepts.append(style_concept)
+                continue
+            normalized_tag = normalize_token(style_tag)
+            if normalized_tag and normalized_tag not in normalized_style_tags:
+                normalized_style_tags.append(normalized_tag)
+        normalized_items.append(
+            replace(
+                item,
+                style_tags=normalized_style_tags,
+                style_concepts=migrated_concepts,
+            )
+        )
+    return normalized_items
+
+
 def _coerce_string(value: object) -> str:
     if value is None:
         return ""
@@ -466,6 +587,161 @@ def _normalized_item_id(*, image_id: str, index: int) -> str:
     if prefix:
         return f"{prefix}#{index}"
     return f"item_{index}"
+
+
+def _enrich_items_from_input(
+    extraction_output: V3ItemExtractionOutput,
+    extraction_input: V3ItemExtractionInput,
+) -> V3ItemExtractionOutput:
+    inferred_style_concepts = _infer_style_concepts_from_input(extraction_input)
+    inferred_style_tags = _infer_style_tags_from_input(extraction_input)
+    canonical_colors = split_multi_value_text(extraction_input.canonical_tags.get("color", ""))
+    updated_items = []
+    enriched_count = 0
+    apparel_item_count = sum(
+        1 for item in extraction_output.items if is_apparel_category(item.category)
+    )
+    missing_color_count = sum(1 for item in extraction_output.items if not item.color)
+    for item in extraction_output.items:
+        merged_style_tags = list(item.style_tags)
+        for style_tag in inferred_style_tags:
+            if style_tag not in merged_style_tags:
+                merged_style_tags.append(style_tag)
+
+        merged_style_concepts = list(item.style_concepts)
+        for style_concept in inferred_style_concepts:
+            if style_concept not in merged_style_concepts:
+                merged_style_concepts.append(style_concept)
+
+        merged_colors = list(item.color)
+        if not merged_colors:
+            merged_colors = _infer_item_colors_from_input(
+                item,
+                extraction_input=extraction_input,
+                canonical_colors=canonical_colors,
+                apparel_item_count=apparel_item_count,
+                missing_color_count=missing_color_count,
+            )
+
+        if (
+            merged_style_tags != item.style_tags
+            or merged_style_concepts != item.style_concepts
+            or merged_colors != item.color
+        ):
+            enriched_count += 1
+        updated_items.append(
+            replace(
+                item,
+                color=merged_colors,
+                style_tags=merged_style_tags,
+                style_concepts=merged_style_concepts,
+            )
+        )
+
+    if enriched_count == 0:
+        return extraction_output
+    notes = list(extraction_output.item_extraction_notes)
+    if CONTEXT_ENRICHMENT_NOTE not in notes:
+        notes.append(CONTEXT_ENRICHMENT_NOTE)
+    return V3ItemExtractionOutput(
+        items=updated_items,
+        item_confidence=extraction_output.item_confidence,
+        item_extraction_notes=notes,
+    )
+
+
+def _infer_style_concepts_from_input(extraction_input: V3ItemExtractionInput) -> list[str]:
+    context_parts = [
+        extraction_input.detail,
+        extraction_input.canonical_tags.get("mood", ""),
+        extraction_input.canonical_tags.get("era", ""),
+        extraction_input.raw_tags.get("mood", ""),
+        extraction_input.raw_tags.get("era", ""),
+        extraction_input.canonical_tags.get("detail", ""),
+        extraction_input.raw_tags.get("detail", ""),
+    ]
+    context = " ".join(part.strip() for part in context_parts if part and part.strip())
+    return extract_style_concepts(context)
+
+
+def _infer_style_tags_from_input(extraction_input: V3ItemExtractionInput) -> list[str]:
+    context_parts = [
+        extraction_input.detail,
+        extraction_input.canonical_tags.get("detail", ""),
+        extraction_input.raw_tags.get("detail", ""),
+    ]
+    context = " ".join(part.strip() for part in context_parts if part and part.strip())
+    return extract_color_style_tags(context)
+
+
+def _infer_item_colors_from_input(
+    item: V3DocumentItem,
+    *,
+    extraction_input: V3ItemExtractionInput,
+    canonical_colors: list[str],
+    apparel_item_count: int,
+    missing_color_count: int,
+) -> list[str]:
+    detail_colors = _infer_colors_from_detail_phrase(item.category, extraction_input.detail)
+    if detail_colors:
+        return detail_colors[:2]
+    evidence_colors = _infer_colors_from_evidence(item.evidence)
+    if evidence_colors:
+        return evidence_colors[:2]
+    if (
+        _color_should_usually_be_present(item.category)
+        and len(canonical_colors) == 1
+        and (
+            apparel_item_count == 1
+            or missing_color_count == 1
+            or _is_accessory_like(item.category)
+        )
+    ):
+        return canonical_colors[:1]
+    if _color_should_usually_be_present(item.category) and canonical_colors:
+        return canonical_colors[:1]
+    return []
+
+
+def _infer_colors_from_detail_phrase(category: str, detail: str) -> list[str]:
+    normalized_category = normalize_token(category)
+    category_tokens = {
+        normalized_category,
+        normalized_category.rstrip("s"),
+        f"{normalized_category}s",
+    }
+    for phrase in split_multi_value_text(detail):
+        normalized_phrase = normalize_token(phrase)
+        if not any(token and token in normalized_phrase for token in category_tokens):
+            continue
+        colors = [
+            color for color in COLOR_TOKENS if f" {color} " in f" {normalized_phrase} "
+        ]
+        if colors:
+            deduped: list[str] = []
+            for color in colors:
+                if color not in deduped:
+                    deduped.append(color)
+            return deduped[:2]
+    return []
+
+
+def _infer_colors_from_evidence(evidence: list[str]) -> list[str]:
+    deduped: list[str] = []
+    for phrase in evidence:
+        normalized_phrase = normalize_token(phrase)
+        for color in COLOR_TOKENS:
+            if f" {color} " in f" {normalized_phrase} " and color not in deduped:
+                deduped.append(color)
+    return deduped[:2]
+
+
+def _color_should_usually_be_present(category: str) -> bool:
+    return normalize_token(category) in COLOR_REQUIRED_CATEGORY_HINTS
+
+
+def _is_accessory_like(category: str) -> bool:
+    return normalize_token(category) in {"bag", "handbag", "hat", "shoes", "boots", "sandals"}
 
 
 # Compatibility aliases to avoid breaking existing integrations during migration.

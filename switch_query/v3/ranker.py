@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from itertools import product
 from typing import Iterable, Sequence
 
+from .concepts import COLOR_TOKENS, extract_color_style_tags, extract_style_concepts, normalize_token
 from .models import (
     V3ArchiveDocument,
     V3DocumentItem,
@@ -15,45 +16,26 @@ from .models import (
     V3TargetItem,
 )
 
-ATTRIBUTE_KEYS = ("color", "silhouette", "material", "pattern", "texture", "style_tags")
+ATTRIBUTE_KEYS = (
+    "color",
+    "silhouette",
+    "material",
+    "pattern",
+    "texture",
+    "style_concepts",
+    "style_tags",
+)
 ITEM_LEVEL_QUERY_FEATURES = frozenset({"category", *ATTRIBUTE_KEYS})
-STYLE_PREFERENCE_ALLOWED_KEYS = frozenset({"mood", "era", "style_tags"})
+STYLE_PREFERENCE_ALLOWED_KEYS = frozenset({"mood", "era", "style_tags", "style_concepts"})
 MULTI_VALUE_SEPARATOR = "|"
-COLOR_LEXICON = {
-    "black",
-    "white",
-    "beige",
-    "brown",
-    "tan",
-    "camel",
-    "gray",
-    "grey",
-    "silver",
-    "charcoal",
-    "navy",
-    "blue",
-    "red",
-    "burgundy",
-    "maroon",
-    "pink",
-    "green",
-    "olive",
-    "khaki",
-    "yellow",
-    "orange",
-    "purple",
-    "lavender",
-    "gold",
-    "cream",
-    "ivory",
-}
 EXACT_WEIGHTS = {
     "color": 6.0,
     "silhouette": 4.0,
     "material": 2.0,
     "pattern": 2.0,
     "texture": 2.0,
-    "style_tags": 2.0,
+    "style_concepts": 2.0,
+    "style_tags": 1.5,
 }
 PARTIAL_WEIGHTS = {
     "color": 2.0,
@@ -61,6 +43,7 @@ PARTIAL_WEIGHTS = {
     "material": 1.0,
     "pattern": 1.0,
     "texture": 1.0,
+    "style_concepts": 1.0,
     "style_tags": 1.0,
 }
 CONTRADICTION_WEIGHTS = {
@@ -69,6 +52,7 @@ CONTRADICTION_WEIGHTS = {
     "material": -2.0,
     "pattern": -2.0,
     "texture": -2.0,
+    "style_concepts": -1.5,
     "style_tags": -1.5,
 }
 REQUIRED_EXACT_BONUS = 2.0
@@ -88,6 +72,7 @@ STYLE_PREFERENCE_EXACT_BONUS = 1.0
 STYLE_PREFERENCE_PARTIAL_BONUS = 0.5
 MISSING_TARGET_PENALTY = -10.0
 HARD_FAIL_PENALTY = -100.0
+CROSS_ITEM_SWAP_FEATURES = ("color", "silhouette", "material", "pattern", "texture")
 
 
 @dataclass(slots=True)
@@ -124,6 +109,9 @@ class V3Ranker:
         documents: Sequence[V3ArchiveDocument],
     ) -> list[V3RankedResult]:
         scored = [_score_document(parsed_query, document) for document in documents]
+        scored = [
+            result for result in scored if not _is_blocked_recommendation(parsed_query, result)
+        ]
         scored.sort(key=lambda result: (-result.score, result.image_id))
         return scored[: self.config.top_k]
 
@@ -147,7 +135,7 @@ def _score_document(parsed_query: V3ParsedQuery, document: V3ArchiveDocument) ->
         score_breakdown[f"item:{option.assignment.target_item_id}:total"] = round(option.score, 6)
 
     matched_count = sum(
-        assignment.status in {"exact", "partial", "fallback_match"}
+        assignment.status in {"exact", "fallback_match"}
         for assignment in item_assignments
     )
     contradiction_count = sum(
@@ -204,6 +192,29 @@ def _score_document(parsed_query: V3ParsedQuery, document: V3ArchiveDocument) ->
     )
 
 
+def _is_blocked_recommendation(
+    parsed_query: V3ParsedQuery,
+    result: V3RankedResult,
+) -> bool:
+    target_by_id = {
+        target_item.target_item_id: target_item for target_item in parsed_query.target_items
+    }
+    for assignment in result.item_assignments:
+        if assignment.status == "missing":
+            return True
+        target_item = target_by_id.get(assignment.target_item_id)
+        if target_item is None:
+            continue
+        required_features = set(target_item.required_attributes)
+        if required_features.intersection(assignment.missing_attributes):
+            return True
+        if required_features.intersection({"style_tags", "style_concepts"}).intersection(
+            assignment.contradicted_attributes
+        ):
+            return True
+    return False
+
+
 def _build_candidate_options(
     target_item: V3TargetItem,
     document: V3ArchiveDocument,
@@ -214,7 +225,7 @@ def _build_candidate_options(
     options: list[_CandidateOption] = []
 
     for item in matching_items:
-        options.append(_evaluate_item_candidate(target_item, item))
+        options.append(_evaluate_item_candidate(target_item, item, document))
 
     if not matching_items:
         fallback_option = _evaluate_fallback_candidate(target_item, document)
@@ -228,6 +239,7 @@ def _build_candidate_options(
 def _evaluate_item_candidate(
     target_item: V3TargetItem,
     document_item: V3DocumentItem,
+    document: V3ArchiveDocument,
 ) -> _CandidateOption:
     assignment = V3ItemAssignment(
         target_item_id=target_item.target_item_id,
@@ -255,7 +267,10 @@ def _evaluate_item_candidate(
         if not query_values:
             continue
 
-        outcome = _classify_values(query_values, list(getattr(document_item, feature)))
+        outcome = _classify_values(
+            query_values,
+            _candidate_item_values(document_item, feature, document),
+        )
         prefix = f"item:{target_item.target_item_id}:{feature}"
         if outcome.status == "exact":
             score += EXACT_WEIGHTS[feature]
@@ -527,6 +542,8 @@ def _score_auxiliary_constraints(
         if feature in ITEM_LEVEL_QUERY_FEATURES or feature not in STYLE_PREFERENCE_ALLOWED_KEYS:
             continue
         candidate_values = _split_values(document.canonical_tags.get(feature, ""))
+        if not candidate_values and feature == "style_concepts":
+            candidate_values = list(_infer_document_style_concepts(document))
         if not candidate_values and feature == "style_tags":
             candidate_values = list(_aggregate_item_style_tags(document.items))
         outcome = _classify_values(query_values, candidate_values)
@@ -560,7 +577,7 @@ def _detect_cross_item_swap_targets(
         if not same_category_items or not other_items:
             continue
 
-        for feature in ATTRIBUTE_KEYS:
+        for feature in CROSS_ITEM_SWAP_FEATURES:
             query_values = list(getattr(target_item, feature))
             if not query_values:
                 continue
@@ -610,7 +627,7 @@ def _evaluate_detail_color_signal(target_item: V3TargetItem, detail: str) -> str
 def _extract_pre_category_colors(phrase: str, category: str) -> set[str]:
     prefix = phrase.split(category, 1)[0]
     words = set(prefix.split())
-    return {color for color in COLOR_LEXICON if color in words}
+    return {color for color in COLOR_TOKENS if color in words}
 
 
 def _aggregate_item_style_tags(items: Iterable[V3DocumentItem]) -> list[str]:
@@ -621,6 +638,63 @@ def _aggregate_item_style_tags(items: Iterable[V3DocumentItem]) -> list[str]:
             if normalized and normalized not in aggregated:
                 aggregated.append(normalized)
     return aggregated
+
+
+def _aggregate_item_style_concepts(items: Iterable[V3DocumentItem]) -> list[str]:
+    aggregated: list[str] = []
+    for item in items:
+        for value in item.style_concepts:
+            normalized = value.strip()
+            if normalized and normalized not in aggregated:
+                aggregated.append(normalized)
+    return aggregated
+
+
+def _candidate_item_values(
+    document_item: V3DocumentItem,
+    feature: str,
+    document: V3ArchiveDocument,
+) -> list[str]:
+    candidate_values = list(getattr(document_item, feature))
+    if candidate_values:
+        return candidate_values
+    if feature == "style_tags":
+        return _infer_document_style_tags(document)
+    if feature == "style_concepts":
+        return _infer_document_style_concepts(document)
+    return candidate_values
+
+
+def _infer_document_style_tags(document: V3ArchiveDocument) -> list[str]:
+    inferred = _aggregate_item_style_tags(document.items)
+    context_parts = [
+        document.detail,
+        document.canonical_tags.get("detail", ""),
+        document.raw_tags.get("detail", ""),
+    ]
+    context = " ".join(part.strip() for part in context_parts if part and part.strip())
+    for style_tag in extract_color_style_tags(context):
+        if style_tag not in inferred:
+            inferred.append(style_tag)
+    return inferred
+
+
+def _infer_document_style_concepts(document: V3ArchiveDocument) -> list[str]:
+    inferred = _aggregate_item_style_concepts(document.items)
+    context_parts = [
+        document.detail,
+        document.canonical_tags.get("mood", ""),
+        document.canonical_tags.get("era", ""),
+        document.canonical_tags.get("detail", ""),
+        document.raw_tags.get("mood", ""),
+        document.raw_tags.get("era", ""),
+        document.raw_tags.get("detail", ""),
+    ]
+    context = " ".join(part.strip() for part in context_parts if part and part.strip())
+    for style_concept in extract_style_concepts(context):
+        if style_concept not in inferred:
+            inferred.append(style_concept)
+    return inferred
 
 
 def _classify_values(query_values: list[str], candidate_values: list[str]) -> _MatchOutcome:
@@ -680,7 +754,7 @@ def _split_values(value: str) -> list[str]:
 
 
 def _normalize(value: str) -> str:
-    return " ".join(value.lower().replace("-", " ").split())
+    return normalize_token(value)
 
 
 def _dedupe(values: Iterable[str]) -> list[str]:
