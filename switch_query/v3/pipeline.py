@@ -82,6 +82,8 @@ class V3Pipeline:
             "union_candidate_count": candidate_set.union_candidate_count,
             "final_ranking_mode": "hybrid_weighted",
             "serialized_query": serialize_parsed_query(parsed_query),
+            "embedding_query_strategy": "serialized_only",
+            "embedding_query_future_work": "late_fusion_planned",
             "uploaded_image_used_in_scoring": False,
         }
         return V3PipelineOutput(

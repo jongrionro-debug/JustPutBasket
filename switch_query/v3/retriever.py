@@ -79,10 +79,13 @@ class V3Retriever:
                 raise ValueError("Embedding candidate retrieval requires a multimodal encoder.")
 
             serialized_query = serialize_parsed_query(parsed_query)
-            query_vectors = self.encoder.encode_text([parsed_query.query_text, serialized_query])
-            if len(query_vectors) != 2:
+            # Precision-first baseline: encode only the parser-serialized query.
+            # If we revisit dense recall later, add late fusion at the score level
+            # rather than averaging raw and serialized query embeddings.
+            query_vectors = self.encoder.encode_text([serialized_query])
+            if len(query_vectors) != 1:
                 raise RuntimeError("Text encoder output size did not match query count")
-            query_vector = _average_vectors(query_vectors)
+            query_vector = query_vectors[0]
             scored = [
                 V3EmbeddingCandidate(
                     image_id=document.image_id,
@@ -193,18 +196,6 @@ def serialize_parsed_query(parsed_query: V3ParsedQuery) -> str:
             parts.append("preferences " + " ; ".join(preference_tokens))
 
     return " ; ".join(parts) if parts else parsed_query.query_text
-
-
-def _average_vectors(vectors: Sequence[list[float]]) -> list[float]:
-    if not vectors:
-        return []
-    dimension = len(vectors[0])
-    if any(len(vector) != dimension for vector in vectors):
-        raise ValueError("Dense vectors must have the same dimensionality")
-    return [
-        sum(vector[index] for vector in vectors) / len(vectors)
-        for index in range(dimension)
-    ]
 
 
 def dense_cosine_similarity(left: list[float], right: list[float]) -> float:

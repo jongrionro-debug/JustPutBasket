@@ -12,6 +12,13 @@ from .batch_probe import (
     run_luxia_batch_capability_probe,
     run_luxia_batch_submit_probe,
 )
+from .fashionpedia import (
+    DEFAULT_FASHIONPEDIA_DATASET_ROOT,
+    DEFAULT_FASHIONPEDIA_DOCUMENTS_PATH,
+    DEFAULT_FASHIONPEDIA_PROVENANCE_PATH,
+    convert_fashionpedia_to_v3_documents,
+    fetch_fashionpedia_dataset,
+)
 from .preprocessing import (
     DEFAULT_OUTPUT_ROOT,
     append_item_extraction_output_jsonl,
@@ -126,6 +133,32 @@ def main() -> None:
     merge_parser.add_argument("--inputs", required=True)
     merge_parser.add_argument("--outputs", required=True)
     merge_parser.add_argument("--output")
+
+    fetch_fashionpedia_parser = subparsers.add_parser(
+        "fetch-fashionpedia",
+        help="Download and unpack official Fashionpedia train/val assets into the local dataset root.",
+    )
+    fetch_fashionpedia_parser.add_argument(
+        "--dataset-root",
+        default=DEFAULT_FASHIONPEDIA_DATASET_ROOT,
+    )
+
+    convert_fashionpedia_parser = subparsers.add_parser(
+        "convert-fashionpedia",
+        help="Convert local Fashionpedia annotations into V3 archive documents JSONL.",
+    )
+    convert_fashionpedia_parser.add_argument(
+        "--dataset-root",
+        default=DEFAULT_FASHIONPEDIA_DATASET_ROOT,
+    )
+    convert_fashionpedia_parser.add_argument(
+        "--output",
+        default=DEFAULT_FASHIONPEDIA_DOCUMENTS_PATH,
+    )
+    convert_fashionpedia_parser.add_argument(
+        "--provenance-output",
+        default=DEFAULT_FASHIONPEDIA_PROVENANCE_PATH,
+    )
 
     args = parser.parse_args()
 
@@ -290,6 +323,45 @@ def main() -> None:
                         f"detail={result.detail}"
                     )
                     for result in results
+                ]
+            )
+        )
+        return
+
+    if args.command == "fetch-fashionpedia":
+        result = fetch_fashionpedia_dataset(dataset_root=args.dataset_root)
+        print(
+            "\n".join(
+                [
+                    f"dataset_root={result.dataset_root}",
+                    f"train_image_dir={result.train_image_dir}",
+                    f"val_image_dir={result.val_image_dir}",
+                    f"train_annotations_path={result.train_annotations_path}",
+                    f"val_annotations_path={result.val_annotations_path}",
+                    f"downloaded_file_count={result.downloaded_file_count}",
+                    f"extracted_archive_count={result.extracted_archive_count}",
+                ]
+            )
+        )
+        return
+
+    if args.command == "convert-fashionpedia":
+        result = convert_fashionpedia_to_v3_documents(
+            dataset_root=args.dataset_root,
+            output_path=args.output,
+            provenance_path=args.provenance_output,
+        )
+        print(
+            "\n".join(
+                [
+                    f"dataset_root={result.dataset_root}",
+                    f"documents_path={result.documents_path}",
+                    f"provenance_path={result.provenance_path}",
+                    f"document_count={result.document_count}",
+                    f"manifest_record_count={result.manifest_record_count}",
+                    f"converted_image_count={result.converted_image_count}",
+                    f"skipped_missing_image_count={result.skipped_missing_image_count}",
+                    f"skipped_empty_item_count={result.skipped_empty_item_count}",
                 ]
             )
         )

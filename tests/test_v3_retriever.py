@@ -6,8 +6,8 @@ from switch_query.v3.retriever import V3Retriever, V3RetrieverConfig
 
 class FakeEncoder:
     def encode_text(self, texts):
-        assert texts == ["black trousers", "item1 ; trousers ; color black"]
-        return [[1.0, 0.0], [1.0, 0.0]]
+        assert texts == ["item1 ; trousers ; color black"]
+        return [[1.0, 0.0]]
 
     def encode_image(self, image_paths):
         raise AssertionError("encode_image should not be called during retrieval")

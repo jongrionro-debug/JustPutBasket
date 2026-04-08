@@ -1,6 +1,7 @@
 """V3 item-aware retrieval package."""
 
 from .batch_probe import LuxiaBatchProbeResult, run_luxia_batch_capability_probe
+from .fashionpedia import convert_fashionpedia_to_v3_documents, fetch_fashionpedia_dataset
 from .index import build_archive_index
 from .models import (
     LocalIndexStore,
@@ -76,8 +77,10 @@ __all__ = [
     "V3TargetItem",
     "build_archive_index",
     "backfill_archive_document_style_tags",
+    "convert_fashionpedia_to_v3_documents",
     "dense_cosine_similarity",
     "ensure_valid_v3_parsed_query",
+    "fetch_fashionpedia_dataset",
     "read_archive_documents_jsonl",
     "run_luxia_batch_capability_probe",
     "validate_v3_parsed_query",

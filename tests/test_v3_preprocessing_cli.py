@@ -280,3 +280,77 @@ def test_submit_batch_probe_cli_prints_attempts(monkeypatch, capsys) -> None:
     assert "attempt_count=2" in stdout
     assert "step=upload endpoint=files_create classification=success" in stdout
     assert "batch_id=batch-probe-1" in stdout
+
+
+def test_fetch_fashionpedia_cli_prints_summary(monkeypatch, capsys) -> None:
+    class FakeResult:
+        dataset_root = "/tmp/fashionpedia"
+        train_image_dir = "/tmp/fashionpedia/images/train"
+        val_image_dir = "/tmp/fashionpedia/images/val"
+        train_annotations_path = "/tmp/fashionpedia/annotations/train.json"
+        val_annotations_path = "/tmp/fashionpedia/annotations/val.json"
+        downloaded_file_count = 4
+        extracted_archive_count = 2
+
+    monkeypatch.setattr(
+        preprocessing_cli,
+        "fetch_fashionpedia_dataset",
+        lambda dataset_root: FakeResult(),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "preprocessing_cli.py",
+            "fetch-fashionpedia",
+            "--dataset-root",
+            "/tmp/fashionpedia",
+        ],
+    )
+
+    preprocessing_cli.main()
+
+    stdout = capsys.readouterr().out
+    assert "dataset_root=/tmp/fashionpedia" in stdout
+    assert "downloaded_file_count=4" in stdout
+    assert "extracted_archive_count=2" in stdout
+
+
+def test_convert_fashionpedia_cli_prints_summary(monkeypatch, capsys) -> None:
+    class FakeResult:
+        dataset_root = "/tmp/fashionpedia"
+        documents_path = "/tmp/out/item_enriched_documents_full.jsonl"
+        provenance_path = "/tmp/out/provenance_manifest.jsonl"
+        document_count = 10
+        manifest_record_count = 12
+        converted_image_count = 10
+        skipped_missing_image_count = 1
+        skipped_empty_item_count = 1
+
+    monkeypatch.setattr(
+        preprocessing_cli,
+        "convert_fashionpedia_to_v3_documents",
+        lambda dataset_root, output_path, provenance_path: FakeResult(),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "preprocessing_cli.py",
+            "convert-fashionpedia",
+            "--dataset-root",
+            "/tmp/fashionpedia",
+            "--output",
+            "/tmp/out/item_enriched_documents_full.jsonl",
+            "--provenance-output",
+            "/tmp/out/provenance_manifest.jsonl",
+        ],
+    )
+
+    preprocessing_cli.main()
+
+    stdout = capsys.readouterr().out
+    assert "documents_path=/tmp/out/item_enriched_documents_full.jsonl" in stdout
+    assert "provenance_path=/tmp/out/provenance_manifest.jsonl" in stdout
+    assert "document_count=10" in stdout
+    assert "skipped_missing_image_count=1" in stdout

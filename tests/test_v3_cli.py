@@ -29,8 +29,8 @@ class FakeQueryEncoder:
         return [[0.0, 0.0] for _path in image_paths]
 
     def encode_text(self, texts):
-        assert texts == ["black trousers", "item1 ; trousers ; color black"]
-        return [[1.0, 0.0], [1.0, 0.0]]
+        assert texts == ["item1 ; trousers ; color black"]
+        return [[1.0, 0.0]]
 
 
 class StubParser:
