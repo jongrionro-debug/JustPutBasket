@@ -1,2 +1,1 @@
-"""Switch Query prototype package."""
-
+"""JustPutBasket prototype package."""

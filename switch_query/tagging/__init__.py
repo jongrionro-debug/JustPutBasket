@@ -1,4 +1,4 @@
-"""Tagging, preprocessing, and synonym utilities for Switch Query."""
+"""Tagging, preprocessing, and synonym utilities for JustPutBasket."""
 
 from .attributes import DEFAULT_ATTRIBUTE_NAMES
 from .local_vlm_tagger import DEFAULT_MODEL, DEFAULT_PROMPT, run_local_vlm

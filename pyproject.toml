@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "switch-query-v2"
+name = "justputbasket"
 version = "0.1.0"
-description = "Image module v1 prototype for switch-query"
+description = "Image-first design exploration prototype for JustPutBasket"
 requires-python = ">=3.11"
 
 [project.optional-dependencies]

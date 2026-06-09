@@ -1,6 +1,6 @@
-# JUSTPUTBASKET
+# JustPutBasket
 
-JUSTPUTBASKET is the current product direction for this repository. The target
+JustPutBasket is the current product direction for this repository. The target
 workflow is image-first design exploration, not recommendation-first search.
 
 ```text
@@ -9,12 +9,12 @@ Original Query -> Reference Feed -> Design Baskets -> Basket Graph -> Pruning ->
 
 The repository still contains earlier V1, V2, and V3 search-pipeline
 experiments. Those modules are useful as retrieval and tagging foundations, but
-they should be treated as supporting work for JUSTPUTBASKET rather than the
+they should be treated as supporting work for JustPutBasket rather than the
 main product story.
 
 ## Product Direction
 
-JUSTPUTBASKET is built around Reference Baskets:
+JustPutBasket is built around Reference Baskets:
 
 1. A user enters one Original Query.
 2. The system prepares a Reference Feed of visual candidates.
@@ -30,7 +30,7 @@ JUSTPUTBASKET is built around Reference Baskets:
 
 ```text
 switch_query/
-  queryswitch_max/   QuerySwitch Max package location
+  justputbasket/     JustPutBasket application package location
   image_module/      Image processing, archive enrichment, and retrieval modules
   tagging/           Image tagging and tag normalization tools
   v1/                Early search pipeline
@@ -42,9 +42,9 @@ tests/               Pipeline, CLI, tagging, and compatibility tests
 
 ## Module Roles
 
-### JUSTPUTBASKET
+### JustPutBasket
 
-`switch_query/queryswitch_max/` is reserved for the QuerySwitch Max application
+`switch_query/justputbasket/` is reserved for the JustPutBasket application
 layer: Reference Feed, Design Baskets, Basket Graphs, Pruning, Generation Runs,
 and the API/UI contracts that support that workflow.
 
@@ -52,14 +52,14 @@ and the API/UI contracts that support that workflow.
 
 `switch_query/image_module/` supports the Reference Feed and archive-based image
 retrieval path. It includes image/archive models, enrichment, retrieval helpers,
-and pipeline logic that can feed QuerySwitch Max.
+and pipeline logic that can feed JustPutBasket.
 
 ### Legacy Search Pipelines
 
 `switch_query/v1/`, `switch_query/v2/`, and `switch_query/v3/` are earlier
 retrieval experiments. They are not the current user-facing product direction.
 Use them as implementation references or migration sources when they help the
-QuerySwitch Max workflow.
+JustPutBasket workflow.
 
 ## Local Setup
 
@@ -102,7 +102,7 @@ uv run pytest tests/test_image_module*.py
 
 ## Image Module Example
 
-The image module can still be exercised directly while QuerySwitch Max is being
+The image module can still be exercised directly while JustPutBasket is being
 connected around it:
 
 ```bash
@@ -113,12 +113,12 @@ uv run python -m switch_query.image_module.cli_pipeline \
   --final-top-k 10 \
   --vlm-reranker-top-n 10 \
   --output-format html \
-  --html-output-path data/cache/queryswitch_report.html
+  --html-output-path data/cache/justputbasket_report.html
 ```
 
 ## Terminology
 
-Use QuerySwitch Max product terms when describing new behavior:
+Use JustPutBasket product terms when describing new behavior:
 
 - Original Query
 - Reference Feed
