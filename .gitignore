@@ -8,3 +8,5 @@ data/
 switch_query_v2.egg-info/
 
 tmp/
+personal/*.md
+plan/*.md
