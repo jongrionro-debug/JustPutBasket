@@ -1,6 +1,6 @@
-# QuerySwitch Max
+# JUSTPUTBASKET
 
-QuerySwitch Max is the current product direction for this repository. The target
+JUSTPUTBASKET is the current product direction for this repository. The target
 workflow is image-first design exploration, not recommendation-first search.
 
 ```text
@@ -9,12 +9,12 @@ Original Query -> Reference Feed -> Design Baskets -> Basket Graph -> Pruning ->
 
 The repository still contains earlier V1, V2, and V3 search-pipeline
 experiments. Those modules are useful as retrieval and tagging foundations, but
-they should be treated as supporting work for QuerySwitch Max rather than the
+they should be treated as supporting work for JUSTPUTBASKET rather than the
 main product story.
 
 ## Product Direction
 
-QuerySwitch Max is built around Reference Baskets:
+JUSTPUTBASKET is built around Reference Baskets:
 
 1. A user enters one Original Query.
 2. The system prepares a Reference Feed of visual candidates.
@@ -42,7 +42,7 @@ tests/               Pipeline, CLI, tagging, and compatibility tests
 
 ## Module Roles
 
-### QuerySwitch Max
+### JUSTPUTBASKET
 
 `switch_query/queryswitch_max/` is reserved for the QuerySwitch Max application
 layer: Reference Feed, Design Baskets, Basket Graphs, Pruning, Generation Runs,
