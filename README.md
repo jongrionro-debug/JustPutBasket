@@ -1,30 +1,75 @@
-# JustPutBasket
+# QuerySwitch Max
 
-패션 아카이브 이미지 검색을 실험하기 위한 Python 프로토타입입니다. 사용자가 자연어로 원하는 옷차림이나 무드를 입력하면, 이미지별 태그와 아이템 정보를 바탕으로 관련성이 높은 아카이브 이미지를 찾아 순위를 매깁니다.
+QuerySwitch Max is the current product direction for this repository. The target
+workflow is image-first design exploration, not recommendation-first search.
 
-## What It Does
+```text
+Original Query -> Reference Feed -> Design Baskets -> Basket Graph -> Pruning -> Generation Run
+```
 
-- 이미지 태그 CSV를 전처리해 검색용 문서로 변환합니다.
-- V1, V2, V3 단계의 검색 파이프라인을 포함합니다.
-- V3는 쿼리를 아이템 단위로 해석하고, 심볼릭 매칭과 임베딩 후보 검색을 함께 사용합니다.
-- 검색 결과를 CSV 또는 HTML 리포트로 저장할 수 있습니다.
-- OpenAI/Luxia 기반 태깅, 로컬 VLM 태깅, Fashionpedia 변환용 보조 도구가 포함되어 있습니다.
+The repository still contains earlier V1, V2, and V3 search-pipeline
+experiments. Those modules are useful as retrieval and tagging foundations, but
+they should be treated as supporting work for QuerySwitch Max rather than the
+main product story.
 
-## Project Structure
+## Product Direction
+
+QuerySwitch Max is built around Reference Baskets:
+
+1. A user enters one Original Query.
+2. The system prepares a Reference Feed of visual candidates.
+3. The user collects Reference Images into Design Baskets.
+4. Each Design Basket represents a user-authored visual direction.
+5. A Basket Graph summarizes observed visual attributes and inferred design
+   intent.
+6. The user prunes Graph Nodes by keeping or removing them.
+7. A Generation Run uses the kept graph snapshot to generate basket-specific
+   images.
+
+## Current Repository Structure
 
 ```text
 switch_query/
-  v1/             초기 검색 파이프라인
-  v2/             태그 랭킹과 문서 기반 검색 파이프라인
-  v3/             아이템 인식 검색 파이프라인
-  tagging/        이미지 태깅 및 태그 정규화 도구
-  image_module/   이미지 처리/태깅 실험 모듈
-tests/            파이프라인과 CLI 테스트
+  queryswitch_max/   QuerySwitch Max package location
+  image_module/      Image processing, archive enrichment, and retrieval modules
+  tagging/           Image tagging and tag normalization tools
+  v1/                Early search pipeline
+  v2/                Tag-ranking and document-based search pipeline
+  v3/                Item-aware search pipeline
+
+tests/               Pipeline, CLI, tagging, and compatibility tests
 ```
 
-## Setup
+## Module Roles
 
-Python 3.11 이상이 필요합니다.
+### QuerySwitch Max
+
+`switch_query/queryswitch_max/` is reserved for the QuerySwitch Max application
+layer: Reference Feed, Design Baskets, Basket Graphs, Pruning, Generation Runs,
+and the API/UI contracts that support that workflow.
+
+### Image Module
+
+`switch_query/image_module/` supports the Reference Feed and archive-based image
+retrieval path. It includes image/archive models, enrichment, retrieval helpers,
+and pipeline logic that can feed QuerySwitch Max.
+
+### Legacy Search Pipelines
+
+`switch_query/v1/`, `switch_query/v2/`, and `switch_query/v3/` are earlier
+retrieval experiments. They are not the current user-facing product direction.
+Use them as implementation references or migration sources when they help the
+QuerySwitch Max workflow.
+
+## Local Setup
+
+Python 3.11 or newer is required.
+
+```bash
+uv sync
+```
+
+If you are not using `uv`, install the package in editable mode:
 
 ```bash
 python -m venv .venv
@@ -32,7 +77,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-선택 기능을 사용할 때는 필요한 extra를 함께 설치합니다.
+Optional extras are available for provider-specific or local model workflows:
 
 ```bash
 pip install -e ".[baseline]"
@@ -40,48 +85,50 @@ pip install -e ".[local_vlm]"
 pip install -e ".[v1]"
 ```
 
-## Basic V3 Workflow
+## Running Tests
 
-1. 정규화된 태그 CSV에서 V3 입력 JSONL을 만듭니다.
-
-```bash
-python -m switch_query.v3.preprocessing_cli build-inputs \
-  --normalized-tags data/normalized_tags.csv \
-  --mode full
-```
-
-2. 아이템 추출 결과와 입력을 병합해 아카이브 문서를 만듭니다.
+Run the full test suite:
 
 ```bash
-python -m switch_query.v3.preprocessing_cli merge-documents \
-  --inputs data/v3/item_inputs_full.jsonl \
-  --outputs data/v3/item_outputs_full.jsonl \
-  --output data/v3/archive_documents.jsonl
+uv run pytest
 ```
 
-3. 검색 인덱스를 생성합니다.
+Or run a specific pipeline area:
 
 ```bash
-python -m switch_query.v3.cli build-index \
-  --documents data/v3/archive_documents.jsonl \
-  --output data/v3/archive_index.json
+uv run pytest tests/test_v3_*.py
+uv run pytest tests/test_image_module*.py
 ```
 
-4. 자연어 쿼리로 검색합니다.
+## Image Module Example
+
+The image module can still be exercised directly while QuerySwitch Max is being
+connected around it:
 
 ```bash
-python -m switch_query.v3.cli run-query \
-  --index data/v3/archive_index.json \
-  --query "black leather jacket with slim denim" \
-  --html-output tmp/results.html
+uv run python -m switch_query.image_module.cli_pipeline \
+  --query-text "bohemian summer white cotton dress mood board" \
+  --stage mood_board \
+  --parser-backend llm_with_fallback \
+  --final-top-k 10 \
+  --vlm-reranker-top-n 10 \
+  --output-format html \
+  --html-output-path data/cache/queryswitch_report.html
 ```
 
-## Tests
+## Terminology
 
-```bash
-python -m pytest
-```
+Use QuerySwitch Max product terms when describing new behavior:
 
-## Notes
+- Original Query
+- Reference Feed
+- Reference Image
+- Design Basket
+- Basket Graph
+- Graph Node
+- Pruning
+- Generation Run
 
-실험용 데이터, 생성 산출물, 임시 파일은 `data/`와 `tmp/` 아래에 두는 것을 권장합니다. API 기반 태깅이나 추출 기능은 별도의 API 키와 모델 접근 권한이 필요할 수 있습니다.
+Avoid presenting the project as only a V1/V2/V3 recommendation or ranking
+pipeline. Those pieces are supporting modules for the Reference Basket product
+direction.
